@@ -1,0 +1,59 @@
+use std::time::Duration;
+use hickory_resolver::{Resolver, TokioResolver};
+use crate::{address_sorting, dns, racing};
+use crate::address_collection::ConnectionTargetList;
+use crate::connection::Hev3Stream;
+
+pub use crate::errors::Hev3Error;
+
+pub type Result<T> = std::result::Result<T, Hev3Error>;
+
+#[derive(Debug, Clone)]
+pub struct Hev3Config {
+    pub resolution_delay: Duration,
+    pub connection_attempt_delay: Duration,
+    pub connection_timeout: Duration,
+    pub preferred_protocol_combination_count: usize,
+    pub use_svcb_instead_of_https: bool,
+}
+
+impl Default for Hev3Config {
+    fn default() -> Self {
+        Self {
+            resolution_delay: Duration::from_millis(50),
+            connection_attempt_delay: Duration::from_millis(250),
+            connection_timeout: Duration::from_secs(20),
+            preferred_protocol_combination_count: 1,
+            use_svcb_instead_of_https: false,
+        }
+    }
+}
+pub struct Hev3 {
+    config: Hev3Config,
+    resolver: TokioResolver,
+}
+
+impl Hev3 {
+    pub fn new(config: Hev3Config) -> Result<Self> {
+        let resolver = Resolver::builder_tokio()?.build();
+        Ok(Self { config, resolver })
+    }
+
+    pub fn with_resolver(config: Hev3Config, resolver: TokioResolver) -> Self {
+        Self { config, resolver }
+    }
+
+    // TODO: use port
+    pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
+        let mut rx = dns::init_queries(&self.resolver, hostname);
+        let dns_results = dns::wait_for_dns_results(&mut rx, self.config.resolution_delay).await?;
+
+        let mut connection_targets = ConnectionTargetList::new(dns_results);
+        address_sorting::sort_addresses(
+            &mut connection_targets, 
+            self.config.preferred_protocol_combination_count
+        );
+
+        racing::race_connections(connection_targets, hostname, &mut rx, &self.config).await
+    }
+}
