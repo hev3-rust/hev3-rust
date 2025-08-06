@@ -41,7 +41,7 @@ Define a custom configuration:
     // Instead of:
     // let config = Hev3Config::default();
     // use:
-    let config = hev3_rust::Hev3Config {
+    let config = Hev3Config {
         resolution_delay: Duration::from_millis(50),
         connection_attempt_delay: Duration::from_millis(250),
         connection_timeout: Duration::from_secs(5),
