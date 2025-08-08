@@ -6,7 +6,7 @@ use crate::hev3_client::{Hev3Config, Hev3Error, Result};
 use std::pin::Pin;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn race_connections(
     mut connection_targets: ConnectionTargetList,
@@ -84,6 +84,7 @@ pub async fn race_connections(
             }
             // Connection attempt delay expires -> start a new connection attempt
             _ = &mut connection_attempt_delay => {
+                debug!("Connection attempt delay expired");
                 if !connection_targets.is_empty() {
                     let next_target = connection_targets.pop_next_target().unwrap();
                     handles.push(start_connection_concurrently(next_target, hostname, &tx));

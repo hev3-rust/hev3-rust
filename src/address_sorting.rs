@@ -46,6 +46,8 @@ pub fn sort_addresses(
     for target in sorted_groups {
         connection_target_list.targets.push_back(target);
     }
+
+    debug!("Sorted connection targets: {:?}", connection_target_list.targets);
 }
 
 /// Step 1: Group by application protocol and ECH support.

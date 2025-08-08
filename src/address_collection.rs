@@ -97,22 +97,20 @@ impl ConnectionTargetList {
             self.add_connection_target(domain, ip, Protocol::Quic, u16::MAX, None, false);
         } else {
             // Use the information from SVCB records to add targets for the given IP address.
-            // Due to Rust's borrowing rules, we need to collect all relevant svcb data first.
-            // relevant_svcb_records holds a reference to self, so we cannot access 
-            // self.add_connection_target inside the loop, as it needs a mutable reference to self.
-            let mut svcb_data = Vec::new();
+            let mut new_targets = Vec::new();
             for svcb_record in relevant_svcb_records {
                 for protocol in self.get_supported_protocols(svcb_record) {
-                    svcb_data.push((
-                        svcb_record.svc_priority(),
+                    new_targets.push(ConnectionTarget{
+                        domain: domain.to_string(),
+                        address: ip,
                         protocol,
-                        svcb_record.get_ech_config(),
-                    ));
+                        priority: svcb_record.svc_priority(),
+                        ech_config: svcb_record.get_ech_config(),
+                        is_from_svcb: false,
+                    });
                 }
             }
-            for (priority, protocol, ech_config) in svcb_data {
-                self.add_connection_target(domain, ip, protocol, priority, ech_config, false);
-            }
+            self.targets.extend(new_targets);
         }
     }
 

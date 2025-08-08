@@ -120,6 +120,7 @@ async fn handle_successful_lookup(
 
     let mut svcb_records = Vec::new();
     for record in lookup.into_iter() {
+        debug!("Received DNS record: {:?}", record);
         match record {
             RData::A(_) | RData::AAAA(_) => {
                 let dns_result = DnsResult::new(context.hostname.clone(), record);
