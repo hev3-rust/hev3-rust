@@ -45,7 +45,8 @@ impl Hev3 {
 
     // TODO: use port
     pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
-        let mut rx = dns::init_queries(&self.resolver, hostname);
+        let mut rx = dns::init_queries(&self.resolver, hostname, 
+            self.config.use_svcb_instead_of_https);
         let dns_results = dns::wait_for_dns_results(&mut rx, self.config.resolution_delay).await?;
 
         let mut connection_targets = ConnectionTargetList::new(dns_results);

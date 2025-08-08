@@ -4,7 +4,7 @@ use hickory_proto::rr::{rdata::{https::HTTPS, svcb::{SvcParamKey, SVCB}, A, AAAA
 use tokio::sync::mpsc::{Receiver, Sender};
 use rand::seq::IndexedRandom;
 use crate::hev3_client::{Result, Hev3Error};
-use log::debug;
+use log::{debug, info, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -48,51 +48,70 @@ impl DnsResult {
 // DNS resolution logic
 ////////////////////////////////////////////////////////////////////////////////
 
+struct LookupContext {
+    resolver: Arc<TokioResolver>,
+    hostname: String,
+    tx: Sender<DnsResult>,
+    use_svcb_instead_of_https: bool,
+}
+
+impl Clone for LookupContext {
+    fn clone(&self) -> Self {
+        Self {
+            resolver: self.resolver.clone(),
+            hostname: self.hostname.clone(),
+            tx: self.tx.clone(),
+            use_svcb_instead_of_https: self.use_svcb_instead_of_https,
+        }
+    }
+}
+
 pub fn init_queries(
     resolver: &TokioResolver, 
-    hostname: &str
+    hostname: &str,
+    use_svcb_instead_of_https: bool,
 ) -> Receiver<DnsResult> {
     let (tx, rx) = tokio::sync::mpsc::channel(32);
-    
-    let resolver = Arc::new(resolver.clone()); // TODO: Mutex?
 
-    // TODO: respect config.use_svcb_instead_of_https
-    start_dns_lookup_concurrently(resolver.clone(), hostname, RecordType::HTTPS, &tx);
-    start_dns_lookup_concurrently(resolver.clone(), hostname, RecordType::AAAA, &tx);
-    start_dns_lookup_concurrently(resolver.clone(), hostname, RecordType::A, &tx);
+    let context = LookupContext {
+        resolver: Arc::new(resolver.clone()),
+        hostname: hostname.to_string(),
+        tx,
+        use_svcb_instead_of_https,
+    };
+
+    let svcb_type = get_svcb_type(use_svcb_instead_of_https);
+    start_dns_lookup_concurrently(svcb_type, &context);
+    start_dns_lookup_concurrently(RecordType::AAAA, &context);
+    start_dns_lookup_concurrently(RecordType::A, &context);
 
     rx
 }
 
 fn start_dns_lookup_concurrently(
-    resolver: Arc<TokioResolver>, 
-    hostname: &str, 
-    record_type: RecordType, 
-    tx: &Sender<DnsResult>
+    record_type: RecordType,
+    context: &LookupContext,
 ) {
-    let hostname = hostname.to_string();
-    let tx = tx.clone();
+    let context = context.clone();
 
     tokio::spawn(async move {
-        let result = resolver.lookup(&hostname, record_type).await;
+        let result = context.resolver.lookup(&context.hostname, record_type).await;
 
         match result {
-            Ok(lookup) => handle_successful_lookup(&lookup, &hostname, resolver, &tx).await,
+            Ok(lookup) => handle_successful_lookup(lookup, &context).await,
             Err(e) => {
                 // TODO: handle errors more appropriately
                 // "no records found" is acceptable, maybe no logging needed?
                 // others might be a problem - panic?
-                println!("DNS resolution error: {:?}", e.to_string());
+                info!("DNS resolution error: {:?}", e.to_string());
             }
         }
     });
 }
 
 async fn handle_successful_lookup(
-    lookup: &Lookup, 
-    hostname: &str,
-    resolver: Arc<TokioResolver>, 
-    tx: &Sender<DnsResult>
+    lookup: Lookup, 
+    context: &LookupContext,
 ) {
     if lookup.records().is_empty() {
         debug!("Empty {} RRset for {}", lookup.query().query_type(), lookup.query().name());
@@ -100,63 +119,80 @@ async fn handle_successful_lookup(
     }
 
     let mut svcb_records = Vec::new();
-    for record in lookup.iter() {
+    for record in lookup.into_iter() {
         match record {
             RData::A(_) | RData::AAAA(_) => {
-                tx.send(DnsResult::new(hostname.to_string(), record.clone())).await.unwrap();
+                let dns_result = DnsResult::new(context.hostname.clone(), record);
+                context.tx.send(dns_result).await.unwrap();
             }
             RData::HTTPS(HTTPS(record)) | RData::SVCB(record) => {
                 // SVCB/HTTPS records are handled in bulk
                 svcb_records.push(record);
             }
             _ => {
-                println!("Unknown record: {:?}", record);
+                info!("Unknown record: {:?}", record);
             }
         }
     }
-    handle_svcb_records(svcb_records, resolver, hostname, &tx).await;
+    handle_svcb_records(svcb_records, context).await;
 }
 
 async fn handle_svcb_records(
-    svcb_records: Vec<&SVCB>, 
-    resolver: Arc<TokioResolver>,
-    hostname: &str,
-    tx: &Sender<DnsResult>
+    svcb_records: Vec<SVCB>, 
+    context: &LookupContext,
 ) {
     // Check if any records are in alias mode (priority 0)
-    let alias_records: Vec<&SVCB> = filter_svcb_records_in_alias_mode(&svcb_records);
+    let alias_records: Vec<&SVCB> = svcb_records
+        .iter()
+        .filter(|r| r.svc_priority() == 0)
+        .collect();
 
-    // If we have alias records, ignore any service mode records [RFC 9460]
+    // If we have alias records, ignore any service mode records [RFC 9460].
+    // Otherwise, send all records over the DnsResult channel.
     if !alias_records.is_empty() {
-        handle_svcb_alias_mode_records(&alias_records, resolver, tx);
+        handle_svcb_alias_mode_records(alias_records, context);
     } else {
         for record in svcb_records {
-            let rdata = RData::HTTPS(HTTPS(record.clone()));
-            tx.send(DnsResult::new(hostname.to_string(), rdata)).await.unwrap();
+            let dns_result = create_dns_result_from_svcb_record(record, context);
+            context.tx.send(dns_result).await.unwrap();
         }
     }
 }
 
-fn filter_svcb_records_in_alias_mode<'a>(
-    svcb_records: &Vec<&'a SVCB>
-) -> Vec<&'a SVCB> {
-    svcb_records.iter().copied().filter(|r| r.svc_priority() == 0).collect()
+fn create_dns_result_from_svcb_record(
+    record: SVCB, 
+    context: &LookupContext,
+) -> DnsResult {
+    let rdata = if context.use_svcb_instead_of_https {
+        RData::SVCB(record)
+    } else {
+        RData::HTTPS(HTTPS(record))
+    };
+    DnsResult::new(context.hostname.clone(), rdata)
 }
 
 /// Chooses one target name randomly from the alias records and resolves it [RFC 9460]
 fn handle_svcb_alias_mode_records(
-    alias_records: &Vec<&SVCB>, 
-    resolver: Arc<TokioResolver>, 
-    tx: &Sender<DnsResult>
+    alias_records: Vec<&SVCB>, 
+    context: &LookupContext,
 ) {
     if let Some(record) = alias_records.choose(&mut rand::rng()) {
+        let mut new_context = context.clone();
+        new_context.hostname = record.target_name().to_utf8();
+
         // TODO loop detection.
         start_dns_lookup_concurrently(
-            resolver.clone(),
-            &record.target_name().to_utf8(),
-            RecordType::HTTPS, // TODO config.use_svcb_instead_of_https
-            tx
+            get_svcb_type(context.use_svcb_instead_of_https),
+            &new_context
         );
+    }
+}
+
+fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
+    if use_svcb_instead_of_https {
+        RecordType::SVCB
+    } else {
+        RecordType::HTTPS
     }
 }
 
@@ -193,11 +229,10 @@ pub async fn wait_for_dns_results(
 async fn wait_for_first_dns_result(rx: &mut Receiver<DnsResult>) -> Result<DnsResult> {
     match rx.recv().await {
         Some(first_dns_result) => {
-            println!("First DNS result received: {:?}", first_dns_result);
             Ok(first_dns_result)
         }
         None => {
-            println!("No addresses found");
+            warn!("No addresses found");
             Err(Hev3Error::NoAddressesFound)
         }
     }
