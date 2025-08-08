@@ -115,7 +115,7 @@ fn start_connection_concurrently(
     let handle = tokio::spawn(async move {
         let stream = match target.protocol {
             Protocol::Quic => connection::connect_quic(target.address, &hostname).await,
-            Protocol::Tcp => connection::connect_tcp_tls(target.address).await,
+            Protocol::Tcp => connection::connect_tcp_tls(target.address, hostname).await,
         };
         let _ = tx.send(stream).await;
     });
