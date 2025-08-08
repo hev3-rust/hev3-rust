@@ -145,10 +145,27 @@ impl ConnectionTargetList {
         self.targets.retain(|target| {
             target.domain != domain || supported_protocols.contains(&target.protocol)
         });
+
+        // Update the connection targets created from prior A/AAAA records with the priority and 
+        // ECH config from the SVCB record.
+        let mut has_ipv4_targets = false;
+        let mut has_ipv6_targets = false;
+        for target in self.targets.iter_mut() {
+            if target.domain != domain {
+                continue;
+            }
+            target.priority = svcb.svc_priority();
+            target.ech_config = svcb.get_ech_config();
+            
+            match target.address {
+                IpAddr::V4(_) => has_ipv4_targets = true,
+                IpAddr::V6(_) => has_ipv6_targets = true,
+            }
+        }
         
         // Add targets for IP hints in SVCB records if the corresponding record (A/AAAA)
         // has not been received yet.
-        if svcb.has_ipv4_hint() && self.get_targets(domain, AddressFamily::IPv4).is_empty() {
+        if svcb.has_ipv4_hint() && !has_ipv4_targets {
             for protocol in self.get_supported_protocols(&svcb) {
                 for ip_hint in svcb.get_ipv4_hint_value().unwrap() {
                     self.add_connection_target(
@@ -161,7 +178,7 @@ impl ConnectionTargetList {
                     );
                 }
             }
-        } else if svcb.has_ipv6_hint() && self.get_targets(domain, AddressFamily::IPv6).is_empty() {
+        } else if svcb.has_ipv6_hint() && !has_ipv6_targets {
             for protocol in self.get_supported_protocols(&svcb) {
                 for ip_hint in svcb.get_ipv6_hint_value().unwrap() {
                     self.add_connection_target(
@@ -181,17 +198,6 @@ impl ConnectionTargetList {
             .entry(domain.to_string())
             .or_insert_with(Vec::new)
             .push(svcb);
-    }
-
-    fn get_targets(
-        &self, 
-        domain: &str, 
-        address_family: AddressFamily
-    ) -> Vec<&ConnectionTarget> {
-        self.targets
-            .iter()
-            .filter(|target| target.domain == domain && address_family.matches(&target.address))
-            .collect()
     }
 
     fn get_supported_protocols(&self, svcb: &SVCB) -> Vec<Protocol> {
