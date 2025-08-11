@@ -1,10 +1,21 @@
-use std::{net::{IpAddr, Ipv4Addr, Ipv6Addr}, sync::Arc, time::Duration};
-use hickory_resolver::{TokioResolver, lookup::Lookup};
-use hickory_proto::rr::{rdata::{https::HTTPS, svcb::{SvcParamKey, SVCB}, A, AAAA}, RData, RecordType};
-use tokio::sync::mpsc::{Receiver, Sender};
-use rand::seq::IndexedRandom;
-use crate::hev3_client::{Result, Hev3Error};
+use crate::hev3_client::{Hev3Error, Result};
+use hickory_proto::rr::{
+    rdata::{
+        https::HTTPS,
+        svcb::{SvcParamKey, SVCB},
+        A, AAAA, CNAME,
+    },
+    RData, RecordType,
+};
+use hickory_resolver::{lookup::Lookup, TokioResolver};
 use log::{debug, info, warn};
+use rand::seq::IndexedRandom;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -67,7 +78,7 @@ impl Clone for LookupContext {
 }
 
 pub fn init_queries(
-    resolver: &TokioResolver, 
+    resolver: &TokioResolver,
     hostname: &str,
     use_svcb_instead_of_https: bool,
 ) -> Receiver<DnsResult> {
@@ -119,6 +130,7 @@ async fn handle_successful_lookup(
     }
 
     let mut svcb_records = Vec::new();
+
     for record in lookup.into_iter() {
         debug!("Received DNS record: {:?}", record);
         match record {
@@ -129,6 +141,10 @@ async fn handle_successful_lookup(
             RData::HTTPS(HTTPS(record)) | RData::SVCB(record) => {
                 // SVCB/HTTPS records are handled in bulk
                 svcb_records.push(record);
+            }
+            RData::CNAME(_) => {
+                // CNAME records are handled by hickory_resolver, so the records for the
+                // canonical name should already be in the record list.
             }
             _ => {
                 info!("Unknown record: {:?}", record);
@@ -184,7 +200,7 @@ fn handle_svcb_alias_mode_records(
         // TODO loop detection.
         start_dns_lookup_concurrently(
             get_svcb_type(context.use_svcb_instead_of_https),
-            &new_context
+            &new_context,
         );
     }
 }
@@ -202,12 +218,12 @@ fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
 ////////////////////////////////////////////////////////////////////////////////
 
 /// TODO: implement new logic
-/// Wait for the resolution delay period to collect DNS responses 
+/// Wait for the resolution delay period to collect DNS responses
 /// or until an HTTPS record with IPv6 address is found
 /// Returns all results received during the delay period
 pub async fn wait_for_dns_results(
-    rx: &mut Receiver<DnsResult>, 
-    resolution_delay: Duration
+    rx: &mut Receiver<DnsResult>,
+    resolution_delay: Duration,
 ) -> Result<Vec<DnsResult>> {
     let mut dns_results = Vec::new();
 
@@ -223,7 +239,7 @@ pub async fn wait_for_dns_results(
         // Resolution delay timeout
         _ = tokio::time::sleep(resolution_delay) => {}
     }
-    
+
     Ok(dns_results)
 }
 
@@ -284,7 +300,7 @@ impl HasIpHint for SVCB {
             .filter(|hints| hints.iter().any(|hint| hint.0 == *ip))
             .is_some()
     }
-    
+
     fn get_ipv4_hint_value(&self) -> Option<Vec<A>> {
         self.svc_params()
             .iter()
@@ -351,9 +367,9 @@ impl HasEchConfig for SVCB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-    use hickory_proto::rr::rdata::svcb::{SvcParamKey, SvcParamValue, IpHint};
     use hickory_proto::rr::domain::Name;
+    use hickory_proto::rr::rdata::svcb::{IpHint, SvcParamKey, SvcParamValue};
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn create_svcb_with_ipv4_hint(ipv4_addresses: Vec<Ipv4Addr>) -> SVCB {
         let a_records: Vec<A> = ipv4_addresses.into_iter().map(A::from).collect();
@@ -363,7 +379,7 @@ mod tests {
         let target_name = Name::from_utf8("example.com.").unwrap();
         SVCB::new(1, target_name, svc_params)
     }
-    
+
     fn create_svcb_with_ipv6_hint(ipv6_addresses: Vec<Ipv6Addr>) -> SVCB {
         let aaaa_records: Vec<AAAA> = ipv6_addresses.into_iter().map(AAAA::from).collect();
         let svc_params = vec![
@@ -372,7 +388,7 @@ mod tests {
         let target_name = Name::from_utf8("example.com.").unwrap();
         SVCB::new(1, target_name, svc_params)
     }
-    
+
     fn create_svcb_without_hints() -> SVCB {
         let target_name = Name::from_utf8("example.com.").unwrap();
         SVCB::new(1, target_name, Vec::new())
@@ -385,10 +401,10 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 1),
         ];
         let svcb = create_svcb_with_ipv4_hint(ipv4_addresses.clone());
-        
+
         assert!(svcb.has_ipv4_hint());
         assert!(svcb.get_ipv4_hint_value().is_some());
-        
+
         // Verify the hint contains the expected addresses
         let hint_values = svcb.get_ipv4_hint_value().unwrap();
         assert_eq!(hint_values.len(), 2);
@@ -403,10 +419,10 @@ mod tests {
             Ipv6Addr::new(0xfe80, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001),
         ];
         let svcb = create_svcb_with_ipv6_hint(ipv6_addresses.clone());
-        
+
         assert!(svcb.has_ipv6_hint());
         assert!(svcb.get_ipv6_hint_value().is_some());
-            
+
         // Verify the hint contains the expected addresses
         let hint_values = svcb.get_ipv6_hint_value().unwrap();
         assert_eq!(hint_values.len(), 2);
@@ -419,13 +435,13 @@ mod tests {
         // Test SVCB records with empty hint lists
         let svcb_empty_ipv4 = create_svcb_with_ipv4_hint(vec![]);
         let svcb_empty_ipv6 = create_svcb_with_ipv6_hint(vec![]);
-        
+
         // Empty hints should still be considered as having hints present
         // but with empty vectors
         assert!(svcb_empty_ipv4.has_ipv4_hint());
         assert!(svcb_empty_ipv4.get_ipv4_hint_value().is_some());
         assert!(svcb_empty_ipv4.get_ipv4_hint_value().unwrap().is_empty());
-        
+
         assert!(svcb_empty_ipv6.has_ipv6_hint());
         assert!(svcb_empty_ipv6.get_ipv6_hint_value().is_some());
         assert!(svcb_empty_ipv6.get_ipv6_hint_value().unwrap().is_empty());
@@ -434,7 +450,7 @@ mod tests {
     #[test]
     fn test_no_ip_hints() {
         let svcb = create_svcb_without_hints();
-        
+
         assert!(!svcb.has_ipv4_hint());
         assert!(!svcb.has_ipv6_hint());
         assert!(svcb.get_ipv4_hint_value().is_none());
