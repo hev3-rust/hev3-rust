@@ -1,8 +1,8 @@
-use std::time::Duration;
-use hickory_resolver::{Resolver, TokioResolver};
-use crate::{address_sorting, dns, racing};
 use crate::address_collection::ConnectionTargetList;
 use crate::connection::Hev3Stream;
+use crate::{address_sorting, dns, racing};
+use hickory_resolver::{Resolver, TokioResolver};
+use std::time::Duration;
 
 pub use crate::errors::Hev3Error;
 
@@ -44,16 +44,18 @@ impl Hev3 {
         Self { config, resolver }
     }
 
-    // TODO: use port
     pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
-        let mut rx = dns::init_queries(&self.resolver, hostname, 
-            self.config.use_svcb_instead_of_https);
+        let mut rx = dns::init_queries(
+            &self.resolver,
+            hostname,
+            self.config.use_svcb_instead_of_https,
+        );
         let dns_results = dns::wait_for_dns_results(&mut rx, self.config.resolution_delay).await?;
 
         let mut connection_targets = ConnectionTargetList::new(dns_results);
         address_sorting::sort_addresses(
-            &mut connection_targets, 
-            self.config.preferred_protocol_combination_count
+            &mut connection_targets,
+            self.config.preferred_protocol_combination_count,
         );
 
         racing::race_connections(connection_targets, hostname, port, &mut rx, &self.config).await
