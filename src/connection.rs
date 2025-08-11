@@ -20,14 +20,14 @@ pub enum Hev3Stream {
     Quic(quinn::Connection),
 }
 
-pub async fn connect_tcp_tls(address: IpAddr, server_name: String) -> Result<Hev3Stream> {
+pub async fn connect_tcp_tls(address: IpAddr, server_name: String, port: u16) -> Result<Hev3Stream> {
     ensure_crypto_provider();
 
     let config = create_rustls_client_config();
 
     let connector = TlsConnector::from(Arc::new(config));
     debug!("Starting TCP connection to {}", address); // TODO measure time
-    let stream = TcpStream::connect((address, 443)).await.map_err(Hev3Error::tcp_error)?;
+    let stream = TcpStream::connect((address, port)).await.map_err(Hev3Error::tcp_error)?;
     debug!("TCP connection established to {}", address);
     let server_name = ServerName::try_from(server_name).map_err(Hev3Error::tls_error)?;
     let tls_stream = connector.connect(server_name, stream).await.map_err(Hev3Error::tls_error)?;
@@ -36,7 +36,7 @@ pub async fn connect_tcp_tls(address: IpAddr, server_name: String) -> Result<Hev
     Ok(Hev3Stream::Tls(tls_stream))
 } 
 
-pub async fn connect_quic(address: IpAddr, server_name: &str) -> Result<Hev3Stream> {
+pub async fn connect_quic(address: IpAddr, server_name: &str, port: u16) -> Result<Hev3Stream> {
     ensure_crypto_provider();
 
     let client_config = create_quinn_client_config()?;
@@ -50,7 +50,7 @@ pub async fn connect_quic(address: IpAddr, server_name: &str) -> Result<Hev3Stre
     let mut endpoint = Endpoint::client(client_socket_addr).map_err(Hev3Error::quic_error)?;
     endpoint.set_default_client_config(client_config);
 
-    let server_socket_addr = SocketAddr::new(address, 443);
+    let server_socket_addr = SocketAddr::new(address, port);
 
     debug!("Starting QUIC connection to {}", address); // TODO measure time
     let connection = endpoint.connect(server_socket_addr, server_name)?.await?;

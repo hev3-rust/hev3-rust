@@ -45,7 +45,7 @@ impl Hev3 {
     }
 
     // TODO: use port
-    pub async fn connect(&self, hostname: &str, _port: u16) -> Result<Hev3Stream> {
+    pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
         let mut rx = dns::init_queries(&self.resolver, hostname, 
             self.config.use_svcb_instead_of_https);
         let dns_results = dns::wait_for_dns_results(&mut rx, self.config.resolution_delay).await?;
@@ -56,6 +56,6 @@ impl Hev3 {
             self.config.preferred_protocol_combination_count
         );
 
-        racing::race_connections(connection_targets, hostname, &mut rx, &self.config).await
+        racing::race_connections(connection_targets, hostname, port, &mut rx, &self.config).await
     }
 }
