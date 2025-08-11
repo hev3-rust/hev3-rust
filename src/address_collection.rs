@@ -64,9 +64,7 @@ impl ConnectionTargetList {
             RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
                 self.add_svcb(&dns_result.domain, svcb);
             }
-            _ => {
-                // TODO: handle other record types? CNAME?
-            }
+            _ => {}
         }
     }
 
@@ -91,7 +89,7 @@ impl ConnectionTargetList {
         let relevant_svcb_records = self.get_relevant_svcb_records_for_target(domain, &ip);
 
         if relevant_svcb_records.is_empty() {
-            // We have no information about protocol preferences, 
+            // We have no information about protocol preferences,
             // so we add a target for both QUIC and TCP
             self.add_connection_target(domain, ip, Protocol::Tcp, u16::MAX, None, false);
             self.add_connection_target(domain, ip, Protocol::Quic, u16::MAX, None, false);
@@ -100,7 +98,7 @@ impl ConnectionTargetList {
             let mut new_targets = Vec::new();
             for svcb_record in relevant_svcb_records {
                 for protocol in self.get_supported_protocols(svcb_record) {
-                    new_targets.push(ConnectionTarget{
+                    new_targets.push(ConnectionTarget {
                         domain: domain.to_string(),
                         address: ip,
                         protocol,
@@ -144,7 +142,7 @@ impl ConnectionTargetList {
             target.domain != domain || supported_protocols.contains(&target.protocol)
         });
 
-        // Update the connection targets created from prior A/AAAA records with the priority and 
+        // Update the connection targets created from prior A/AAAA records with the priority and
         // ECH config from the SVCB record.
         let mut has_ipv4_targets = false;
         let mut has_ipv6_targets = false;
@@ -154,13 +152,13 @@ impl ConnectionTargetList {
             }
             target.priority = svcb.svc_priority();
             target.ech_config = svcb.get_ech_config();
-            
+
             match target.address {
                 IpAddr::V4(_) => has_ipv4_targets = true,
                 IpAddr::V6(_) => has_ipv6_targets = true,
             }
         }
-        
+
         // Add targets for IP hints in SVCB records if the corresponding record (A/AAAA)
         // has not been received yet.
         if svcb.has_ipv4_hint() && !has_ipv4_targets {
@@ -218,7 +216,7 @@ impl ConnectionTargetList {
         ech_config: Option<Vec<u8>>,
         is_from_svcb: bool,
     ) {
-        self.targets.push_back(ConnectionTarget{
+        self.targets.push_back(ConnectionTarget {
             domain: domain.to_string(),
             address,
             protocol,
