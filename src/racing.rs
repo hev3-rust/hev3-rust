@@ -60,7 +60,6 @@ pub async fn race_connections(
                 }
             }
             // New DNS result -> include into connection targets list
-            // If there are no connection attempts left and the CAD is elapsed, start the next connection attempt
             // FIXME: might introduce a duplicate connection attempt if:
             //     An A or AAAA record arrives and a connection is attempted
             //     The connection attempt fails
@@ -74,17 +73,11 @@ pub async fn race_connections(
                     &mut connection_targets, 
                     config.preferred_protocol_combination_count
                 );
-                if all_handles_finished(&handles) 
-                    && connection_attempt_delay.is_elapsed() 
-                    && !connection_targets.is_empty()
-                {
-                    let next_target = connection_targets.pop_next_target().unwrap();
-                    handles.push(start_connection_concurrently(next_target, hostname, &tx));
-                    connection_attempt_delay = create_cad(config);
-                }
             }
             // Connection attempt delay expires -> start a new connection attempt
-            _ = &mut connection_attempt_delay => {
+            // This branch is disabled if there are no further connection targets, because otherwise
+            // tokio::select! would immediately execute this branch on every further iteration
+            _ = &mut connection_attempt_delay, if !connection_targets.is_empty() => {
                 debug!("Connection attempt delay expired");
                 if !connection_targets.is_empty() {
                     let next_target = connection_targets.pop_next_target().unwrap();
