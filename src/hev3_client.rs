@@ -13,7 +13,7 @@ pub struct Hev3Config {
     pub resolution_delay: Duration,
     pub connection_attempt_delay: Duration,
     pub connection_timeout: Duration,
-    pub preferred_protocol_combination_count: usize,
+    pub preferred_address_family_count: usize,
     pub use_svcb_instead_of_https: bool,
 }
 
@@ -23,7 +23,7 @@ impl Default for Hev3Config {
             resolution_delay: Duration::from_millis(50),
             connection_attempt_delay: Duration::from_millis(250),
             connection_timeout: Duration::from_secs(20),
-            preferred_protocol_combination_count: 1,
+            preferred_address_family_count: 1,
             use_svcb_instead_of_https: false,
         }
     }
@@ -55,7 +55,7 @@ impl Hev3 {
         let mut connection_targets = ConnectionTargetList::new(dns_results);
         address_sorting::sort_addresses(
             &mut connection_targets,
-            self.config.preferred_protocol_combination_count,
+            self.config.preferred_address_family_count,
         );
 
         racing::race_connections(connection_targets, hostname, port, &mut rx, &self.config).await

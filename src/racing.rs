@@ -71,7 +71,7 @@ pub async fn race_connections(
                 connection_targets.add_dns_result(dns_result);
                 address_sorting::sort_addresses(
                     &mut connection_targets, 
-                    config.preferred_protocol_combination_count
+                    config.preferred_address_family_count
                 );
             }
             // Connection attempt delay expires -> start a new connection attempt
