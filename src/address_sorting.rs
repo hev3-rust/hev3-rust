@@ -116,8 +116,8 @@ fn group_by_service_priority(
 }
 
 /// Step 3: Sort by destination address preferences within each group
-/// Implements RFC 6724 Destination Address Selection.
-/// Could be extended to use historical data.
+/// Implements RFC 6724 Destination Address Selection. (TODO)
+/// Could be extended to use historical data. (TODO?)
 /// Addresses are interleaved within each group.
 fn sort_by_destination_preferences(
     service_priority_groups: Vec<Vec<ConnectionTarget>>,

@@ -3,7 +3,7 @@ use hickory_proto::rr::{
     rdata::{
         https::HTTPS,
         svcb::{SvcParamKey, SVCB},
-        A, AAAA, CNAME,
+        A, AAAA,
     },
     RData, RecordType,
 };
@@ -47,12 +47,6 @@ impl AddressFamily {
 pub struct DnsResult {
     pub domain: String,
     pub record: RData,
-}
-
-impl DnsResult {
-    pub fn new(domain: String, record: RData) -> Self {
-        Self { domain, record }
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -131,16 +125,19 @@ async fn handle_successful_lookup(
 
     let mut svcb_records = Vec::new();
 
-    for record in lookup.into_iter() {
+    for record in lookup.records() {
         debug!("Received DNS record: {:?}", record);
-        match record {
+        match record.data() {
             RData::A(_) | RData::AAAA(_) => {
-                let dns_result = DnsResult::new(context.hostname.clone(), record);
+                let dns_result = DnsResult {
+                    domain: record.name().to_utf8(),
+                    record: record.data().clone(),
+                };
                 context.tx.send(dns_result).await.unwrap();
             }
-            RData::HTTPS(HTTPS(record)) | RData::SVCB(record) => {
+            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
                 // SVCB/HTTPS records are handled in bulk
-                svcb_records.push(record);
+                svcb_records.push((record.name().to_utf8(), svcb));
             }
             RData::CNAME(_) => {
                 // CNAME records are handled by hickory_resolver, so the records for the
@@ -155,13 +152,14 @@ async fn handle_successful_lookup(
 }
 
 async fn handle_svcb_records(
-    svcb_records: Vec<SVCB>, 
+    svcb_records: Vec<(String, &SVCB)>, 
     context: &LookupContext,
 ) {
     // Check if any records are in alias mode (priority 0)
     let alias_records: Vec<&SVCB> = svcb_records
         .iter()
-        .filter(|r| r.svc_priority() == 0)
+        .filter(|r| r.1.svc_priority() == 0)
+        .map(|r| r.1)
         .collect();
 
     // If we have alias records, ignore any service mode records [RFC 9460].
@@ -169,23 +167,11 @@ async fn handle_svcb_records(
     if !alias_records.is_empty() {
         handle_svcb_alias_mode_records(alias_records, context);
     } else {
-        for record in svcb_records {
-            let dns_result = create_dns_result_from_svcb_record(record, context);
+        for record in svcb_records.into_iter() {
+            let dns_result = create_dns_result_from_svcb_record(record.0, record.1, context);
             context.tx.send(dns_result).await.unwrap();
         }
     }
-}
-
-fn create_dns_result_from_svcb_record(
-    record: SVCB, 
-    context: &LookupContext,
-) -> DnsResult {
-    let rdata = if context.use_svcb_instead_of_https {
-        RData::SVCB(record)
-    } else {
-        RData::HTTPS(HTTPS(record))
-    };
-    DnsResult::new(context.hostname.clone(), rdata)
 }
 
 /// Chooses one target name randomly from the alias records and resolves it [RFC 9460]
@@ -210,6 +196,23 @@ fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
         RecordType::SVCB
     } else {
         RecordType::HTTPS
+    }
+}
+
+fn create_dns_result_from_svcb_record(
+    hostname: String,
+    record: &SVCB, 
+    context: &LookupContext,
+) -> DnsResult {
+    let rdata = if context.use_svcb_instead_of_https {
+        RData::SVCB(record.clone())
+    } else {
+        RData::HTTPS(HTTPS(record.clone()))
+    };
+    
+    DnsResult {
+        domain: hostname,
+        record: rdata,
     }
 }
 

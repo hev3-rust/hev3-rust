@@ -4,8 +4,8 @@ use quinn::{crypto::rustls::QuicClientConfig, Endpoint};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
@@ -20,7 +20,11 @@ pub enum Hev3Stream {
     Quic(quinn::Connection),
 }
 
-pub async fn connect_tcp_tls(address: IpAddr, server_name: String, port: u16) -> Result<Hev3Stream> {
+pub async fn connect_tcp_tls(
+    address: IpAddr,
+    server_name: String,
+    port: u16,
+) -> Result<Hev3Stream> {
     ensure_crypto_provider();
 
     let config = create_rustls_client_config();
@@ -34,7 +38,7 @@ pub async fn connect_tcp_tls(address: IpAddr, server_name: String, port: u16) ->
     debug!("TLS stream established to {}", address);
 
     Ok(Hev3Stream::Tls(tls_stream))
-} 
+}
 
 pub async fn connect_quic(address: IpAddr, server_name: &str, port: u16) -> Result<Hev3Stream> {
     ensure_crypto_provider();
@@ -55,7 +59,7 @@ pub async fn connect_quic(address: IpAddr, server_name: &str, port: u16) -> Resu
     debug!("Starting QUIC connection to {}", address); // TODO measure time
     let connection = endpoint.connect(server_socket_addr, server_name)?.await?;
     debug!("QUIC connection established to {}", address);
-    
+
     Ok(Hev3Stream::Quic(connection))
 }
 
