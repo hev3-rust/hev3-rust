@@ -52,6 +52,10 @@ impl ConnectionTargetList {
     }
 
     pub fn add_dns_result(&mut self, dns_result: DnsResult) {
+        let DnsResult::PositiveDnsResult(dns_result) = dns_result else {
+            // We can ignore negative DNS results here
+            return;
+        };
         match dns_result.record {
             RData::A(A(ip)) => {
                 self.remove_targets_from_svcb(&dns_result.domain, AddressFamily::IPv4);

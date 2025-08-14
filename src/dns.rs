@@ -9,6 +9,7 @@ use hickory_proto::rr::{
 };
 use hickory_resolver::{lookup::Lookup, TokioResolver};
 use log::{debug, info, warn};
+use pnet::datalink;
 use rand::seq::IndexedRandom;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -43,10 +44,21 @@ impl AddressFamily {
     }
 }
 
+pub enum DnsResult {
+    PositiveDnsResult(PositiveDnsResult),
+    NegativeDnsResult(RecordType),
+}
+
 #[derive(Debug, Clone)]
-pub struct DnsResult {
+pub struct PositiveDnsResult {
     pub domain: String,
     pub record: RData,
+}
+
+impl From<PositiveDnsResult> for DnsResult {
+    fn from(result: PositiveDnsResult) -> Self {
+        DnsResult::PositiveDnsResult(result)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -100,15 +112,16 @@ fn start_dns_lookup_concurrently(
     let context = context.clone();
 
     tokio::spawn(async move {
+        debug!("Starting lookup for {} records", record_type);
         let result = context.resolver.lookup(&context.hostname, record_type).await;
 
         match result {
             Ok(lookup) => handle_successful_lookup(lookup, &context).await,
             Err(e) => {
-                // TODO: handle errors more appropriately
-                // "no records found" is acceptable, maybe no logging needed?
-                // others might be a problem - panic?
-                info!("DNS resolution error: {:?}", e.to_string());
+                info!("DNS resolution error for {}: {:?}", record_type, e.to_string());
+                // TODO: do the following only if "no records found". Other errors might have to be handled differently.
+                let negative_result = DnsResult::NegativeDnsResult(record_type);
+                context.tx.send(negative_result).await.unwrap();
             }
         }
     });
@@ -120,20 +133,23 @@ async fn handle_successful_lookup(
 ) {
     if lookup.records().is_empty() {
         debug!("Empty {} RRset for {}", lookup.query().query_type(), lookup.query().name());
+        let negative_result = DnsResult::NegativeDnsResult(lookup.query().query_type());
+        context.tx.send(negative_result).await.unwrap();
         return;
     }
 
     let mut svcb_records = Vec::new();
 
     for record in lookup.records() {
-        debug!("Received DNS record: {:?}", record);
+        debug!("Received DNS record: \"{}\", ttl: {}, rdata: {:?}", 
+            record.name().to_utf8(), record.ttl(), record.data());
         match record.data() {
             RData::A(_) | RData::AAAA(_) => {
-                let dns_result = DnsResult {
+                let dns_result = PositiveDnsResult {
                     domain: record.name().to_utf8(),
                     record: record.data().clone(),
                 };
-                context.tx.send(dns_result).await.unwrap();
+                context.tx.send(dns_result.into()).await.unwrap();
             }
             RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
                 // SVCB/HTTPS records are handled in bulk
@@ -169,7 +185,7 @@ async fn handle_svcb_records(
     } else {
         for record in svcb_records.into_iter() {
             let dns_result = create_dns_result_from_svcb_record(record.0, record.1, context);
-            context.tx.send(dns_result).await.unwrap();
+            context.tx.send(dns_result.into()).await.unwrap();
         }
     }
 }
@@ -201,61 +217,205 @@ fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
 
 fn create_dns_result_from_svcb_record(
     hostname: String,
-    record: &SVCB, 
+    record: &SVCB,
     context: &LookupContext,
-) -> DnsResult {
+) -> PositiveDnsResult {
     let rdata = if context.use_svcb_instead_of_https {
         RData::SVCB(record.clone())
     } else {
         RData::HTTPS(HTTPS(record.clone()))
     };
-    
-    DnsResult {
+
+    PositiveDnsResult {
         domain: hostname,
         record: rdata,
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Resolution delay: Waiting for addresses
+// Waiting for DNS results
 ////////////////////////////////////////////////////////////////////////////////
 
-/// TODO: implement new logic
-/// Wait for the resolution delay period to collect DNS responses
-/// or until an HTTPS record with IPv6 address is found
-/// Returns all results received during the delay period
+/// Wait for DNS results according to HEv3 specification Section 4.2
+/// The client moves onto sorting addresses and establishing connections once:
+/// 
+/// Either:
+/// * Some positive (non-empty) address answers have been received AND
+/// * A positive (non-empty) or negative (empty) answer has been received for the preferred address family AND
+/// * SVCB/HTTPS service information has been received (or has received a negative response)
+/// 
+/// Or:
+/// * Some positive (non-empty) address answers have been received AND
+/// * A resolution time delay has passed after which other answers have not been received
 pub async fn wait_for_dns_results(
     rx: &mut Receiver<DnsResult>,
     resolution_delay: Duration,
 ) -> Result<Vec<DnsResult>> {
     let mut dns_results = Vec::new();
 
-    dns_results.push(wait_for_first_dns_result(rx).await?);
+    // If IPv6 is available, prefer it over IPv4.
+    let ipv6_preferred = is_ipv6_available();
+    // TODO: if neither ipv4 nor ipv6 are available, return an NoRouteAvailable error?
 
-    tokio::select! {
-        // Wait for more results
-        _ = async {
-            while let Some(dns_result) = rx.recv().await {
-                dns_results.push(dns_result);
+    // Wait for first answer that contains an address
+    let dns_results_received_until_first_address = wait_for_first_address(rx).await?;
+    dns_results.extend(dns_results_received_until_first_address);
+
+    let mut preferred_family_result_received = false;
+    let mut svcb_result_received = false;
+
+    for result in &dns_results {
+        preferred_family_result_received |= is_preferred_family_result(result, ipv6_preferred);
+        svcb_result_received |= is_svcb_result(result);
+    }
+
+    // If any of the initial results already satisfy our conditions, return immediately
+    if preferred_family_result_received && svcb_result_received {
+        debug!("Received an answer for the preferred family and SVCB/HTTPS, \
+                continue to address sorting");
+        return Ok(dns_results);
+    }
+
+    let delay_future = tokio::time::sleep(resolution_delay);
+    tokio::pin!(delay_future);
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Some(dns_result) => {
+                        preferred_family_result_received |= is_preferred_family_result(&dns_result, 
+                            ipv6_preferred);
+                        svcb_result_received |= is_svcb_result(&dns_result);
+                        
+                        dns_results.push(dns_result);
+                        
+                        if preferred_family_result_received && svcb_result_received {
+                            debug!("Received an answer for the preferred family and SVCB/HTTPS, \
+                                    continue to address sorting");
+                            return Ok(dns_results);
+                        }
+                    }
+                    None => {
+                        // All DNS queries have completed, return what we have
+                        debug!("All DNS queries have completed, continue to address sorting");
+                        return Ok(dns_results);
+                    }
+                }
             }
-        } => {}
-        // Resolution delay timeout
-        _ = tokio::time::sleep(resolution_delay) => {}
+            // Resolution delay timeout (condition set 2)
+            _ = &mut delay_future => {
+                debug!("Resolution delay timeout, continue to address sorting");
+                return Ok(dns_results);
+            }
+        }
+    }
+}
+
+fn is_ipv6_available() -> bool {
+    datalink::interfaces().iter()
+        .filter(|interface| interface.is_up() && !interface.is_loopback())
+        .flat_map(|interface| interface.ips.iter())
+        .any(|ip| {
+            match ip.ip() {
+                IpAddr::V6(ip) => {
+                    !ip.is_unicast_link_local() && !ip.is_loopback() && !ip.is_unspecified()
+                }
+                _ => false,
+            }
+        })
+}
+
+async fn wait_for_first_address(
+    rx: &mut Receiver<DnsResult>
+) -> Result<Vec<DnsResult>> {
+    let mut dns_results = Vec::new();
+
+    loop {
+        let dns_result = match rx.recv().await {
+            Some(first_dns_result) => first_dns_result,
+            None => {
+                warn!("No addresses found");
+                return Err(Hev3Error::NoAddressesFound)
+            }
+        };
+
+        let first_address_received = has_address(&dns_result);
+
+        dns_results.push(dns_result);
+        
+        if first_address_received {
+            break;
+        }
     }
 
     Ok(dns_results)
 }
 
-async fn wait_for_first_dns_result(rx: &mut Receiver<DnsResult>) -> Result<DnsResult> {
-    match rx.recv().await {
-        Some(first_dns_result) => {
-            Ok(first_dns_result)
+fn has_address(dns_result: &DnsResult) -> bool {
+    if let DnsResult::PositiveDnsResult(positive_dns_result) = dns_result {
+        match &positive_dns_result.record {
+            RData::A(_) | RData::AAAA(_) => true,
+            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
+                svcb.has_ipv6_hint() || svcb.has_ipv4_hint()
+            },
+            _ => false,
         }
-        None => {
-            warn!("No addresses found");
-            Err(Hev3Error::NoAddressesFound)
-        }
+    } else {
+        false
     }
+}
+
+fn is_preferred_family_result(
+    dns_result: &DnsResult,
+    ipv6_preferred: bool,
+) -> bool {
+    let record_type = match dns_result {
+        DnsResult::PositiveDnsResult(positive_dns_result) => {
+            &positive_dns_result.record.record_type()
+        }
+        DnsResult::NegativeDnsResult(record_type) => record_type
+    };
+
+    match record_type {
+        RecordType::AAAA => ipv6_preferred,
+        RecordType::A => !ipv6_preferred,
+        RecordType::SVCB | RecordType::HTTPS => {
+            if let Some(svcb) = extract_svcb_record(dns_result) {
+                if ipv6_preferred {
+                    svcb.has_ipv6_hint()
+                } else {
+                    svcb.has_ipv4_hint()
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn extract_svcb_record(dns_result: &DnsResult) -> Option<&SVCB> {
+    match dns_result {
+        DnsResult::PositiveDnsResult(positive_dns_result) => {
+            match &positive_dns_result.record {
+                RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => Some(svcb),
+                _ => None,
+            }
+        }
+        DnsResult::NegativeDnsResult(_) => None,
+    }
+}
+
+fn is_svcb_result(dns_result: &DnsResult) -> bool {
+    let record_type = match dns_result {
+        DnsResult::PositiveDnsResult(positive_dns_result) => {
+            &positive_dns_result.record.record_type()
+        }
+        DnsResult::NegativeDnsResult(record_type) => record_type
+    };
+
+    matches!(record_type, RecordType::SVCB | RecordType::HTTPS)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -307,18 +467,14 @@ impl HasIpHint for SVCB {
     fn get_ipv4_hint_value(&self) -> Option<Vec<A>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| {
-                key == &SvcParamKey::Ipv4Hint && value.is_ipv4_hint()
-            })
+            .find(|(key, value)| key == &SvcParamKey::Ipv4Hint && value.is_ipv4_hint())
             .map(|(_, value)| value.as_ipv4_hint().unwrap().0.clone())
     }
 
     fn get_ipv6_hint_value(&self) -> Option<Vec<AAAA>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| {
-                key == &SvcParamKey::Ipv6Hint && value.is_ipv6_hint()
-            })
+            .find(|(key, value)| key == &SvcParamKey::Ipv6Hint && value.is_ipv6_hint())
             .map(|(_, value)| value.as_ipv6_hint().unwrap().0.clone())
     }
 }
@@ -335,18 +491,15 @@ impl HasAlpn for SVCB {
     fn has_alpn_param(&self) -> bool {
         self.svc_params()
             .iter()
-            .any(|(key, value)| {
-                key == &SvcParamKey::Alpn && value.is_alpn()
-            })
+            .any(|(key, value)| key == &SvcParamKey::Alpn && value.is_alpn())
     }
 
     fn has_alpn_id(&self, alpn_id: &str) -> bool {
-        self.svc_params()
-            .iter()
-            .any(|(key, value)| {
-                key == &SvcParamKey::Alpn && value.is_alpn() &&
-                value.as_alpn().unwrap().0.contains(&alpn_id.to_string())
-            })
+        self.svc_params().iter().any(|(key, value)| {
+            key == &SvcParamKey::Alpn
+                && value.is_alpn()
+                && value.as_alpn().unwrap().0.contains(&alpn_id.to_string())
+        })
     }
 }
 
@@ -360,9 +513,7 @@ impl HasEchConfig for SVCB {
     fn get_ech_config(&self) -> Option<Vec<u8>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| {
-                key == &SvcParamKey::EchConfigList && value.is_ech_config_list()
-            })
+            .find(|(key, value)| key == &SvcParamKey::EchConfigList && value.is_ech_config_list())
             .map(|(_, value)| value.as_ech_config_list().unwrap().0.clone())
     }
 }

@@ -8,6 +8,7 @@ pub use crate::errors::Hev3Error;
 
 pub type Result<T> = std::result::Result<T, Hev3Error>;
 
+// TODO: Builder?
 #[derive(Debug, Clone)]
 pub struct Hev3Config {
     pub resolution_delay: Duration,
