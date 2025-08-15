@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{mpsc::{Receiver, Sender}, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -70,6 +70,7 @@ struct LookupContext {
     hostname: String,
     tx: Sender<DnsResult>,
     use_svcb_instead_of_https: bool,
+    previous_lookups: Arc<RwLock<Vec<(String, RecordType)>>>,
 }
 
 impl Clone for LookupContext {
@@ -79,6 +80,7 @@ impl Clone for LookupContext {
             hostname: self.hostname.clone(),
             tx: self.tx.clone(),
             use_svcb_instead_of_https: self.use_svcb_instead_of_https,
+            previous_lookups: self.previous_lookups.clone(),
         }
     }
 }
@@ -95,6 +97,7 @@ pub fn init_queries(
         hostname: hostname.to_string(),
         tx,
         use_svcb_instead_of_https,
+        previous_lookups: Arc::new(RwLock::new(Vec::new())),
     };
 
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
@@ -112,7 +115,14 @@ fn start_dns_lookup_concurrently(
     let context = context.clone();
 
     tokio::spawn(async move {
-        debug!("Starting lookup for {} records", record_type);
+        let previous_lookups = context.previous_lookups.read().await;
+        if previous_lookups.contains(&(context.hostname.clone(), record_type)) {
+            return;
+        }
+        drop(previous_lookups);
+
+        debug!("Starting {} lookup for {}", record_type, context.hostname);
+        context.previous_lookups.write().await.push((context.hostname.clone(), record_type));
         let result = context.resolver.lookup(&context.hostname, record_type).await;
 
         match result {
@@ -141,8 +151,8 @@ async fn handle_successful_lookup(
     let mut svcb_records = Vec::new();
 
     for record in lookup.records() {
-        debug!("Received DNS record: \"{}\", ttl: {}, rdata: {:?}", 
-            record.name().to_utf8(), record.ttl(), record.data());
+        debug!("Received {} record: \"{}\", ttl: {}, rdata: {:?}", 
+            record.record_type(), record.name().to_utf8(), record.ttl(), record.data());
         match record.data() {
             RData::A(_) | RData::AAAA(_) => {
                 let dns_result = PositiveDnsResult {
@@ -184,6 +194,7 @@ async fn handle_svcb_records(
         handle_svcb_alias_mode_records(alias_records, context);
     } else {
         for record in svcb_records.into_iter() {
+            resolve_alternative_target_names(record.1, context);
             let dns_result = create_dns_result_from_svcb_record(record.0, record.1, context);
             context.tx.send(dns_result.into()).await.unwrap();
         }
@@ -196,10 +207,21 @@ fn handle_svcb_alias_mode_records(
     context: &LookupContext,
 ) {
     if let Some(record) = alias_records.choose(&mut rand::rng()) {
+        if record.target_name().is_root() {
+            // RFC 9460, Section 2.5.1:
+            // "For AliasMode SVCB RRs, a TargetName of "." indicates that the service is not
+            // available or does not exist. This indication is advisory: clients encountering this
+            // indication *MAY* ignore it and attempt to connect without the use of SVCB."
+            // We choose to ignore it here, because this is the easiest way to handle it.
+            debug!("Ignoring AliasMode SVCB record with TargetName '.' for {}.", context.hostname);
+            return;
+        }
+
         let mut new_context = context.clone();
         new_context.hostname = record.target_name().to_utf8();
 
-        // TODO loop detection.
+        // TODO loop detection
+        // TODO in case of an alias chain, start A/AAAA lookups for the last alias name
         start_dns_lookup_concurrently(
             get_svcb_type(context.use_svcb_instead_of_https),
             &new_context,
@@ -215,6 +237,16 @@ fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
     }
 }
 
+fn resolve_alternative_target_names(record: &SVCB, context: &LookupContext) {
+    let mut new_context = context.clone();
+    if !record.target_name().is_root() {
+        new_context.hostname = record.target_name().to_utf8();
+    }
+
+    start_dns_lookup_concurrently(RecordType::AAAA, &new_context);
+    start_dns_lookup_concurrently(RecordType::A, &new_context);
+}
+
 fn create_dns_result_from_svcb_record(
     hostname: String,
     record: &SVCB,
@@ -226,8 +258,14 @@ fn create_dns_result_from_svcb_record(
         RData::HTTPS(HTTPS(record.clone()))
     };
 
+    let domain = if record.target_name().is_root() {
+        hostname
+    } else {
+        record.target_name().to_utf8()
+    };
+
     PositiveDnsResult {
-        domain: hostname,
+        domain,
         record: rdata,
     }
 }
@@ -292,7 +330,7 @@ pub async fn wait_for_dns_results(
                         
                         if preferred_family_result_received && svcb_result_received {
                             debug!("Received an answer for the preferred family and SVCB/HTTPS, \
-                                    continue to address sorting");
+                                    continue to address sorting"); // TODO measure time
                             return Ok(dns_results);
                         }
                     }
