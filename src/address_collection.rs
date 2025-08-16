@@ -3,6 +3,7 @@ use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
     RData,
 };
+use tracing::debug;
 use std::collections::HashMap;
 use std::{collections::VecDeque, net::IpAddr};
 
@@ -52,30 +53,32 @@ impl ConnectionTargetList {
     }
 
     pub fn add_dns_result(&mut self, dns_result: DnsResult) {
-        let DnsResult::PositiveDnsResult(dns_result) = dns_result else {
+        let DnsResult::PositiveDnsResult(records) = dns_result else {
             // We can ignore negative DNS results here
             return;
         };
-        match dns_result.record {
-            RData::A(A(ip)) => {
-                self.remove_targets_from_svcb(&dns_result.domain, AddressFamily::IPv4);
-                self.add_a_or_aaaa(&dns_result.domain, ip.into());
+        for record in records {
+            match record.data() {
+                RData::A(A(ip)) => {
+                    self.remove_targets_from_svcb(record.name().to_utf8(), AddressFamily::IPv4);
+                    self.add_a_or_aaaa(record.name().to_utf8(), (*ip).into());
+                }
+                RData::AAAA(AAAA(ip)) => {
+                    self.remove_targets_from_svcb(record.name().to_utf8(), AddressFamily::IPv6);
+                    self.add_a_or_aaaa(record.name().to_utf8(), (*ip).into());
+                }
+                RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
+                    self.add_svcb(record.name().to_utf8(), svcb.clone());
+                }
+                _ => {}
             }
-            RData::AAAA(AAAA(ip)) => {
-                self.remove_targets_from_svcb(&dns_result.domain, AddressFamily::IPv6);
-                self.add_a_or_aaaa(&dns_result.domain, ip.into());
-            }
-            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
-                self.add_svcb(&dns_result.domain, svcb);
-            }
-            _ => {}
         }
     }
 
     /// Removes all targets of a given address family that originate from IP hints in SVCB records
     fn remove_targets_from_svcb(
         &mut self, 
-        domain: &str, 
+        domain: String, 
         address_family: AddressFamily
     ) {
         self.targets.retain(|target| {
@@ -87,23 +90,23 @@ impl ConnectionTargetList {
 
     fn add_a_or_aaaa(
         &mut self, 
-        domain: &str, 
+        domain: String, 
         ip: IpAddr
     ) {
-        let relevant_svcb_records = self.get_relevant_svcb_records_for_target(domain, &ip);
+        let relevant_svcb_records = self.get_relevant_svcb_records_for_target(&domain, &ip);
 
         if relevant_svcb_records.is_empty() {
             // We have no information about protocol preferences,
             // so we add a target for both QUIC and TCP
-            self.add_connection_target(domain, ip, Protocol::Tcp, u16::MAX, None, false);
-            self.add_connection_target(domain, ip, Protocol::Quic, u16::MAX, None, false);
+            self.add_connection_target(&domain, ip, Protocol::Tcp, u16::MAX, None, false);
+            self.add_connection_target(&domain, ip, Protocol::Quic, u16::MAX, None, false);
         } else {
             // Use the information from SVCB records to add targets for the given IP address.
             let mut new_targets = Vec::new();
             for svcb_record in relevant_svcb_records {
                 for protocol in self.get_supported_protocols(svcb_record) {
                     new_targets.push(ConnectionTarget {
-                        domain: domain.to_string(),
+                        domain: domain.clone(),
                         address: ip,
                         protocol,
                         priority: svcb_record.svc_priority(),
@@ -111,6 +114,7 @@ impl ConnectionTargetList {
                         is_from_svcb: false,
                     });
                 }
+                debug!("Add {} targets for domain {} and IP {}", new_targets.len(), domain, ip);
             }
             self.targets.extend(new_targets);
         }
@@ -137,7 +141,7 @@ impl ConnectionTargetList {
 
     fn add_svcb(
         &mut self, 
-        domain: &str, 
+        domain: String, 
         svcb: SVCB
     ) {
         // Remove Connection Targets from prior A/AAAA records if the protocol is not supported
@@ -169,7 +173,7 @@ impl ConnectionTargetList {
             for protocol in self.get_supported_protocols(&svcb) {
                 for ip_hint in svcb.get_ipv4_hint_value().unwrap() {
                     self.add_connection_target(
-                        domain,
+                        &domain,
                         ip_hint.0.into(),
                         protocol.clone(),
                         u16::MAX,
@@ -182,7 +186,7 @@ impl ConnectionTargetList {
             for protocol in self.get_supported_protocols(&svcb) {
                 for ip_hint in svcb.get_ipv6_hint_value().unwrap() {
                     self.add_connection_target(
-                        domain,
+                        &domain,
                         ip_hint.0.into(),
                         protocol.clone(),
                         u16::MAX,
@@ -195,7 +199,7 @@ impl ConnectionTargetList {
 
         // Store the record, as it contains information for A/AAAA records that might arrive later
         self.additional_domain_info
-            .entry(domain.to_string())
+            .entry(domain)
             .or_insert_with(Vec::new)
             .push(svcb);
     }

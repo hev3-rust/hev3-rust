@@ -5,7 +5,7 @@ use hickory_proto::rr::{
         svcb::{SvcParamKey, SVCB},
         A, AAAA,
     },
-    RData, RecordType,
+    RData, Record, RecordType
 };
 use hickory_resolver::{lookup::Lookup, TokioResolver};
 use log::{debug, info, warn};
@@ -45,20 +45,9 @@ impl AddressFamily {
 }
 
 pub enum DnsResult {
-    PositiveDnsResult(PositiveDnsResult),
+    // The Vec should always contain records of the same type. However, this is not enforced currently.
+    PositiveDnsResult(Vec<Record>),
     NegativeDnsResult(RecordType),
-}
-
-#[derive(Debug, Clone)]
-pub struct PositiveDnsResult {
-    pub domain: String,
-    pub record: RData,
-}
-
-impl From<PositiveDnsResult> for DnsResult {
-    fn from(result: PositiveDnsResult) -> Self {
-        DnsResult::PositiveDnsResult(result)
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -148,6 +137,7 @@ async fn handle_successful_lookup(
         return;
     }
 
+    let mut address_records = Vec::new();
     let mut svcb_records = Vec::new();
 
     for record in lookup.records() {
@@ -155,15 +145,10 @@ async fn handle_successful_lookup(
             record.record_type(), record.name().to_utf8(), record.ttl(), record.data());
         match record.data() {
             RData::A(_) | RData::AAAA(_) => {
-                let dns_result = PositiveDnsResult {
-                    domain: record.name().to_utf8(),
-                    record: record.data().clone(),
-                };
-                context.tx.send(dns_result.into()).await.unwrap();
+                address_records.push(record.clone());
             }
             RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
-                // SVCB/HTTPS records are handled in bulk
-                svcb_records.push((record.name().to_utf8(), svcb));
+                svcb_records.push(record.clone());
             }
             RData::CNAME(_) => {
                 // CNAME records are handled by hickory_resolver, so the records for the
@@ -174,18 +159,24 @@ async fn handle_successful_lookup(
             }
         }
     }
+    context.tx.send(DnsResult::PositiveDnsResult(address_records)).await.unwrap();
     handle_svcb_records(svcb_records, context).await;
 }
 
 async fn handle_svcb_records(
-    svcb_records: Vec<(String, &SVCB)>, 
+    svcb_records: Vec<Record>, 
     context: &LookupContext,
 ) {
     // Check if any records are in alias mode (priority 0)
     let alias_records: Vec<&SVCB> = svcb_records
         .iter()
-        .filter(|r| r.1.svc_priority() == 0)
-        .map(|r| r.1)
+        .map(|r| {
+            match r.data() {
+                RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => svcb,
+                _ => panic!("Expected HTTPS/SVCB record, got {:?}", r.data()),
+            }
+        })
+        .filter(|r| r.svc_priority() == 0)
         .collect();
 
     // If we have alias records, ignore any service mode records [RFC 9460].
@@ -193,11 +184,8 @@ async fn handle_svcb_records(
     if !alias_records.is_empty() {
         handle_svcb_alias_mode_records(alias_records, context);
     } else {
-        for record in svcb_records.into_iter() {
-            resolve_alternative_target_names(record.1, context);
-            let dns_result = create_dns_result_from_svcb_record(record.0, record.1, context);
-            context.tx.send(dns_result.into()).await.unwrap();
-        }
+        resolve_alternative_target_names(&svcb_records, context);
+        context.tx.send(DnsResult::PositiveDnsResult(svcb_records)).await.unwrap();
     }
 }
 
@@ -237,36 +225,20 @@ fn get_svcb_type(use_svcb_instead_of_https: bool) -> RecordType {
     }
 }
 
-fn resolve_alternative_target_names(record: &SVCB, context: &LookupContext) {
-    let mut new_context = context.clone();
-    if !record.target_name().is_root() {
-        new_context.hostname = record.target_name().to_utf8();
-    }
+fn resolve_alternative_target_names(svcb_records: &Vec<Record>, context: &LookupContext) {
+    for record in svcb_records {
+        let svcb = match record.data() {
+            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => svcb,
+            _ => panic!("Expected HTTPS/SVCB record, got {:?}", record.data()),
+        };
 
-    start_dns_lookup_concurrently(RecordType::AAAA, &new_context);
-    start_dns_lookup_concurrently(RecordType::A, &new_context);
-}
-
-fn create_dns_result_from_svcb_record(
-    hostname: String,
-    record: &SVCB,
-    context: &LookupContext,
-) -> PositiveDnsResult {
-    let rdata = if context.use_svcb_instead_of_https {
-        RData::SVCB(record.clone())
-    } else {
-        RData::HTTPS(HTTPS(record.clone()))
-    };
-
-    let domain = if record.target_name().is_root() {
-        hostname
-    } else {
-        record.target_name().to_utf8()
-    };
-
-    PositiveDnsResult {
-        domain,
-        record: rdata,
+        let mut new_context = context.clone();
+        if !svcb.target_name().is_root() {
+            new_context.hostname = svcb.target_name().to_utf8();
+        }
+    
+        start_dns_lookup_concurrently(RecordType::AAAA, &new_context);
+        start_dns_lookup_concurrently(RecordType::A, &new_context);
     }
 }
 
@@ -392,68 +364,63 @@ async fn wait_for_first_address(
 
 fn has_address(dns_result: &DnsResult) -> bool {
     if let DnsResult::PositiveDnsResult(positive_dns_result) = dns_result {
-        match &positive_dns_result.record {
-            RData::A(_) | RData::AAAA(_) => true,
-            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
-                svcb.has_ipv6_hint() || svcb.has_ipv4_hint()
-            },
-            _ => false,
-        }
+        positive_dns_result.iter().any(|record| {
+            match record.data() {
+                RData::A(_) | RData::AAAA(_) => true,
+                RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
+                    svcb.has_ipv6_hint() || svcb.has_ipv4_hint()
+                },
+                _ => false,
+            }
+        })
     } else {
         false
     }
 }
 
+/// Returns true if the DNS result:
+/// - contains a record (A/AAAA) for the preferred family, or
+/// - is a NegativeDnsResult for the preferred family's query (A/AAAA), or
+/// - contains an SVCB/HTTPS record with an iphint param for the preferred family.
 fn is_preferred_family_result(
     dns_result: &DnsResult,
     ipv6_preferred: bool,
 ) -> bool {
-    let record_type = match dns_result {
-        DnsResult::PositiveDnsResult(positive_dns_result) => {
-            &positive_dns_result.record.record_type()
-        }
-        DnsResult::NegativeDnsResult(record_type) => record_type
-    };
-
-    match record_type {
-        RecordType::AAAA => ipv6_preferred,
-        RecordType::A => !ipv6_preferred,
-        RecordType::SVCB | RecordType::HTTPS => {
-            if let Some(svcb) = extract_svcb_record(dns_result) {
-                if ipv6_preferred {
-                    svcb.has_ipv6_hint()
-                } else {
-                    svcb.has_ipv4_hint()
-                }
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-fn extract_svcb_record(dns_result: &DnsResult) -> Option<&SVCB> {
     match dns_result {
         DnsResult::PositiveDnsResult(positive_dns_result) => {
-            match &positive_dns_result.record {
-                RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => Some(svcb),
-                _ => None,
-            }
+            positive_dns_result.iter().any(|record| {   
+                match record.data() {
+                    RData::AAAA(_) => ipv6_preferred,
+                    RData::A(_) => !ipv6_preferred,
+                    RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
+                        if ipv6_preferred {
+                            svcb.has_ipv6_hint()
+                        } else {
+                            svcb.has_ipv4_hint()
+                        }
+                    }
+                    _ => false,
+                }
+            })
         }
-        DnsResult::NegativeDnsResult(_) => None,
+        DnsResult::NegativeDnsResult(record_type) => {
+            (*record_type == RecordType::AAAA && ipv6_preferred)
+            || (*record_type == RecordType::A && !ipv6_preferred)
+        }
     }
 }
 
 fn is_svcb_result(dns_result: &DnsResult) -> bool {
-    let record_type = match dns_result {
-        DnsResult::PositiveDnsResult(positive_dns_result) => {
-            &positive_dns_result.record.record_type()
+    match dns_result {
+        DnsResult::PositiveDnsResult(records) => {
+            records.iter().any(|record| {
+                matches!(record.record_type(), RecordType::SVCB | RecordType::HTTPS)
+            })
         }
-        DnsResult::NegativeDnsResult(record_type) => record_type
-    };
-
-    matches!(record_type, RecordType::SVCB | RecordType::HTTPS)
+        DnsResult::NegativeDnsResult(record_type) => {
+            matches!(record_type, RecordType::SVCB | RecordType::HTTPS)
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
