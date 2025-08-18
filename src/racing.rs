@@ -6,7 +6,7 @@ use crate::hev3_client::{Hev3Config, Hev3Error, Result};
 use std::pin::Pin;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 pub async fn race_connections(
     mut connection_targets: ConnectionTargetList,
@@ -68,6 +68,7 @@ pub async fn race_connections(
             //     (or vice versa: first HTTPS, then A/AAAA)
             //     -> keep track of failed connection attempts?
             Some(dns_result) = dns_rx.recv() => {
+                trace!("New DNS result: {:?}", dns_result);
                 connection_targets.add_dns_result(dns_result);
                 address_sorting::sort_addresses(
                     &mut connection_targets, 

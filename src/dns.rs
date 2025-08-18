@@ -44,6 +44,7 @@ impl AddressFamily {
     }
 }
 
+#[derive(Debug)]
 pub enum DnsResult {
     // The Vec should always contain records of the same type. However, this is not enforced currently.
     PositiveDnsResult(Vec<Record>),
@@ -159,8 +160,12 @@ async fn handle_successful_lookup(
             }
         }
     }
-    context.tx.send(DnsResult::PositiveDnsResult(address_records)).await.unwrap();
-    handle_svcb_records(svcb_records, context).await;
+    if !address_records.is_empty() {
+        context.tx.send(DnsResult::PositiveDnsResult(address_records)).await.unwrap();
+    }
+    if !svcb_records.is_empty() {
+        handle_svcb_records(svcb_records, context).await;
+    }
 }
 
 async fn handle_svcb_records(

@@ -3,7 +3,7 @@ use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
     RData,
 };
-use tracing::debug;
+use tracing::trace;
 use std::collections::HashMap;
 use std::{collections::VecDeque, net::IpAddr};
 
@@ -68,7 +68,12 @@ impl ConnectionTargetList {
                     self.add_a_or_aaaa(record.name().to_utf8(), (*ip).into());
                 }
                 RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
-                    self.add_svcb(record.name().to_utf8(), svcb.clone());
+                    let domain = if svcb.target_name().is_root() {
+                        record.name().to_utf8()
+                    } else {
+                        svcb.target_name().to_utf8()
+                    };
+                    self.add_svcb(domain, svcb.clone());
                 }
                 _ => {}
             }
@@ -114,7 +119,7 @@ impl ConnectionTargetList {
                         is_from_svcb: false,
                     });
                 }
-                debug!("Add {} targets for domain {} and IP {}", new_targets.len(), domain, ip);
+                trace!("Add {} targets for domain {} and IP {}", new_targets.len(), domain, ip);
             }
             self.targets.extend(new_targets);
         }
