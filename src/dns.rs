@@ -147,7 +147,7 @@ async fn handle_successful_lookup(
             RData::A(_) | RData::AAAA(_) => {
                 address_records.push(record.clone());
             }
-            RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
+            RData::HTTPS(_) | RData::SVCB(_) => {
                 svcb_records.push(record.clone());
             }
             RData::CNAME(_) => {
