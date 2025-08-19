@@ -13,10 +13,10 @@ use pnet::datalink;
 use rand::seq::IndexedRandom;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::{mpsc::{Receiver, Sender}, RwLock};
+use tokio::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -60,7 +60,7 @@ struct LookupContext {
     hostname: String,
     tx: Sender<DnsResult>,
     use_svcb_instead_of_https: bool,
-    previous_lookups: Arc<RwLock<Vec<(String, RecordType)>>>,
+    previous_lookups: Arc<Mutex<Vec<(String, RecordType)>>>,
 }
 
 impl Clone for LookupContext {
@@ -87,7 +87,7 @@ pub fn init_queries(
         hostname: hostname.to_string(),
         tx,
         use_svcb_instead_of_https,
-        previous_lookups: Arc::new(RwLock::new(Vec::new())),
+        previous_lookups: Arc::new(Mutex::new(Vec::new())),
     };
 
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
@@ -98,21 +98,15 @@ pub fn init_queries(
     rx
 }
 
-fn start_dns_lookup_concurrently(
-    record_type: RecordType,
-    context: &LookupContext,
-) {
+fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContext) {
     let context = context.clone();
 
     tokio::spawn(async move {
-        let previous_lookups = context.previous_lookups.read().await;
-        if previous_lookups.contains(&(context.hostname.clone(), record_type)) {
+        if save_in_previous_lookups(record_type, &context).is_err() {
             return;
         }
-        drop(previous_lookups);
 
         debug!("Starting {} lookup for {}", record_type, context.hostname);
-        context.previous_lookups.write().await.push((context.hostname.clone(), record_type));
         let result = context.resolver.lookup(&context.hostname, record_type).await;
 
         match result {
@@ -127,10 +121,19 @@ fn start_dns_lookup_concurrently(
     });
 }
 
-async fn handle_successful_lookup(
-    lookup: Lookup, 
+fn save_in_previous_lookups(
+    record_type: RecordType,
     context: &LookupContext,
-) {
+) -> std::result::Result<(), ()> {
+    let mut previous_lookups = context.previous_lookups.lock().unwrap();
+    if previous_lookups.contains(&(context.hostname.clone(), record_type)) {
+        return Err(());
+    }
+    previous_lookups.push((context.hostname.clone(), record_type));
+    Ok(())
+}
+
+async fn handle_successful_lookup(lookup: Lookup, context: &LookupContext) {
     if lookup.records().is_empty() {
         debug!("Empty {} RRset for {}", lookup.query().query_type(), lookup.query().name());
         let negative_result = DnsResult::NegativeDnsResult(lookup.query().query_type());
@@ -168,10 +171,7 @@ async fn handle_successful_lookup(
     }
 }
 
-async fn handle_svcb_records(
-    svcb_records: Vec<Record>, 
-    context: &LookupContext,
-) {
+async fn handle_svcb_records(svcb_records: Vec<Record>, context: &LookupContext) {
     // Check if any records are in alias mode (priority 0)
     let alias_records: Vec<&SVCB> = svcb_records
         .iter()
@@ -195,16 +195,13 @@ async fn handle_svcb_records(
 }
 
 /// Chooses one target name randomly from the alias records and resolves it [RFC 9460]
-fn handle_svcb_alias_mode_records(
-    alias_records: Vec<&SVCB>, 
-    context: &LookupContext,
-) {
+fn handle_svcb_alias_mode_records(alias_records: Vec<&SVCB>, context: &LookupContext) {
     if let Some(record) = alias_records.choose(&mut rand::rng()) {
         if record.target_name().is_root() {
             // RFC 9460, Section 2.5.1:
             // "For AliasMode SVCB RRs, a TargetName of "." indicates that the service is not
             // available or does not exist. This indication is advisory: clients encountering this
-            // indication *MAY* ignore it and attempt to connect without the use of SVCB."
+            // indication **MAY** ignore it and attempt to connect without the use of SVCB."
             // We choose to ignore it here, because this is the easiest way to handle it.
             debug!("Ignoring AliasMode SVCB record with TargetName '.' for {}.", context.hostname);
             return;
@@ -341,9 +338,7 @@ fn is_ipv6_available() -> bool {
         })
 }
 
-async fn wait_for_first_address(
-    rx: &mut Receiver<DnsResult>
-) -> Result<Vec<DnsResult>> {
+async fn wait_for_first_address(rx: &mut Receiver<DnsResult>) -> Result<Vec<DnsResult>> {
     let mut dns_results = Vec::new();
 
     loop {
