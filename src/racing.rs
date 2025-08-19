@@ -68,14 +68,15 @@ pub async fn race_connections(
             //     A new connection attempt to the same target is started
             //     (or vice versa: first HTTPS, then A/AAAA)
             //     -> keep track of failed connection attempts?
-            // TODO: only sort when PositiveDnsResult. NegativeDnsResult don't add any new targets
             Some(dns_result) = dns_rx.recv() => {
                 trace!("New DNS result: {:?}", dns_result);
-                connection_targets.add_dns_result(dns_result);
-                address_sorting::sort_addresses(
-                    &mut connection_targets, 
-                    config.preferred_address_family_count
-                );
+                if matches!(dns_result, DnsResult::PositiveDnsResult(_)) {
+                    connection_targets.add_dns_result(dns_result);
+                    address_sorting::sort_addresses(
+                        &mut connection_targets, 
+                        config.preferred_address_family_count
+                    );
+                }
             }
             // Connection attempt delay expires -> start a new connection attempt
             // This branch is disabled if there are no further connection targets, because otherwise
