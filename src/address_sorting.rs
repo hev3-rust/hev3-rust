@@ -1,7 +1,7 @@
 use crate::dns::{Protocol, AddressFamily};
 use crate::address_collection::{ConnectionTargetList, ConnectionTarget};
 use std::net::IpAddr;
-use tracing::debug;
+use tracing::{debug, trace};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
@@ -47,7 +47,7 @@ pub fn sort_addresses(
         connection_target_list.targets.push_back(target);
     }
 
-    debug!("Sorted connection targets: {:?}", connection_target_list.targets);
+    trace!("Sorted connection targets: {:?}", connection_target_list.targets);
 }
 
 /// Step 1: Group by application protocol and ECH support.

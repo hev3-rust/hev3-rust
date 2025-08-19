@@ -45,8 +45,8 @@ impl ConnectionTargetList {
         self.targets.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.targets.is_empty()
+    pub fn has_remaining(&self) -> bool {
+        self.targets.iter().any(|target| !target.used)
     }
 
     pub fn get_next_target(&mut self) -> Option<&ConnectionTarget> {

@@ -15,7 +15,7 @@ pub async fn race_connections(
     dns_rx: &mut Receiver<DnsResult>,
     config: &Hev3Config,
 ) -> Result<Hev3Stream> {
-    if connection_targets.is_empty() {
+    if !connection_targets.has_remaining() {
         return Err(Hev3Error::NoRouteAvailable);
     }
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(connection_targets.len());
@@ -35,7 +35,7 @@ pub async fn race_connections(
         // 3. the connection attempt channel is empty (no results in buffer), and
         // 4. the dns result channel is closed (all DNS lookups are finished)
         // -> nothing left to wait for
-        if connection_targets.is_empty()
+        if !connection_targets.has_remaining()
             && all_handles_finished(&handles)
             && rx.is_empty()
             && dns_rx.is_closed()
@@ -56,6 +56,7 @@ pub async fn race_connections(
                         abort_all_pending_tasks(&mut handles);
                         return result;
                     }
+                    // TODO: start next attempt immediately
                     Err(e) => info!("Connection attempt failed: {}", e),
                 }
             }
@@ -67,6 +68,7 @@ pub async fn race_connections(
             //     A new connection attempt to the same target is started
             //     (or vice versa: first HTTPS, then A/AAAA)
             //     -> keep track of failed connection attempts?
+            // TODO: only sort when PositiveDnsResult. NegativeDnsResult don't add any new targets
             Some(dns_result) = dns_rx.recv() => {
                 trace!("New DNS result: {:?}", dns_result);
                 connection_targets.add_dns_result(dns_result);
@@ -78,7 +80,7 @@ pub async fn race_connections(
             // Connection attempt delay expires -> start a new connection attempt
             // This branch is disabled if there are no further connection targets, because otherwise
             // tokio::select! would immediately execute this branch on every further iteration
-            _ = &mut connection_attempt_delay, if !connection_targets.is_empty() => {
+            _ = &mut connection_attempt_delay, if connection_targets.has_remaining() => {
                 debug!("Connection attempt delay expired");
                 if let Some(next_target) = connection_targets.get_next_target() {
                     handles.push(start_connection_concurrently(next_target, hostname, port, &tx));
