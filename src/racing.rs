@@ -21,7 +21,7 @@ pub async fn race_connections(
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(connection_targets.len());
     let (tx, mut rx) = tokio::sync::mpsc::channel(connection_targets.len());
 
-    let first_target = connection_targets.pop_next_target().unwrap();
+    let first_target = connection_targets.get_next_target().unwrap();
 
     handles.push(start_connection_concurrently(first_target, hostname, port, &tx));
 
@@ -80,8 +80,7 @@ pub async fn race_connections(
             // tokio::select! would immediately execute this branch on every further iteration
             _ = &mut connection_attempt_delay, if !connection_targets.is_empty() => {
                 debug!("Connection attempt delay expired");
-                if !connection_targets.is_empty() {
-                    let next_target = connection_targets.pop_next_target().unwrap();
+                if let Some(next_target) = connection_targets.get_next_target() {
                     handles.push(start_connection_concurrently(next_target, hostname, port, &tx));
                     connection_attempt_delay = create_cad(config);
                 }
@@ -101,18 +100,20 @@ pub async fn race_connections(
 }
 
 fn start_connection_concurrently(
-    target: ConnectionTarget,
+    target: &ConnectionTarget,
     hostname: &str,
     port: u16,
     tx: &Sender<Result<Hev3Stream>>,
 ) -> JoinHandle<()> {
+    let protocol = target.protocol;
+    let address = target.address;
     let hostname = hostname.to_string();
     let tx = tx.clone();
 
     let handle = tokio::spawn(async move {
-        let stream = match target.protocol {
-            Protocol::Quic => connection::connect_quic(target.address, &hostname, port).await,
-            Protocol::Tcp => connection::connect_tcp_tls(target.address, hostname, port).await,
+        let stream = match protocol {
+            Protocol::Quic => connection::connect_quic(address, &hostname, port).await,
+            Protocol::Tcp => connection::connect_tcp_tls(address, hostname, port).await,
         };
         let _ = tx.send(stream).await;
     });

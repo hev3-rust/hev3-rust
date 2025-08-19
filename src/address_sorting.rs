@@ -219,6 +219,7 @@ mod tests {
             priority,
             ech_config,
             is_from_svcb: false,
+            used: false,
         }
     }
 

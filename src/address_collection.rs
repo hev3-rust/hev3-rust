@@ -15,6 +15,7 @@ pub struct ConnectionTarget {
     pub priority: u16,
     pub ech_config: Option<Vec<u8>>,
     pub is_from_svcb: bool,
+    pub used: bool,
 }
 
 impl ConnectionTarget {
@@ -48,8 +49,10 @@ impl ConnectionTargetList {
         self.targets.is_empty()
     }
 
-    pub fn pop_next_target(&mut self) -> Option<ConnectionTarget> {
-        self.targets.pop_front()
+    pub fn get_next_target(&mut self) -> Option<&ConnectionTarget> {
+        let next = self.targets.iter_mut().find(|target| !target.used)?;
+        next.used = true;
+        Some(next)
     }
 
     pub fn add_dns_result(&mut self, dns_result: DnsResult) {
@@ -117,6 +120,7 @@ impl ConnectionTargetList {
                         priority: svcb_record.svc_priority(),
                         ech_config: svcb_record.get_ech_config(),
                         is_from_svcb: false,
+                        used: false,
                     });
                 }
                 trace!("Add {} targets for domain {} and IP {}", new_targets.len(), domain, ip);
@@ -236,6 +240,7 @@ impl ConnectionTargetList {
             priority,
             ech_config,
             is_from_svcb,
+            used: false,
         });
     }
 }

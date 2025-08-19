@@ -18,13 +18,13 @@ use std::{
 };
 use tokio::sync::mpsc::{Receiver, Sender};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
     Tcp,
     Quic,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AddressFamily {
     IPv4,
     IPv6,
