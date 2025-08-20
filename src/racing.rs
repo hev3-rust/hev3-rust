@@ -1,10 +1,10 @@
 use crate::address_collection::{ConnectionTarget, ConnectionTargetList};
 use crate::address_sorting;
 use crate::connection::{self, Hev3Stream};
-use crate::dns::{DnsResult, Protocol};
+use crate::dns::{DnsResolver, DnsResult, Protocol};
 use crate::hev3_client::{Hev3Config, Hev3Error, Result};
 use std::pin::Pin;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -12,17 +12,17 @@ pub async fn race_connections(
     mut connection_targets: ConnectionTargetList,
     hostname: &str,
     port: u16,
-    dns_rx: &mut Receiver<DnsResult>,
+    mut dns_resolver: DnsResolver,
     config: &Hev3Config,
 ) -> Result<Hev3Stream> {
-    let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(connection_targets.len());
+    let mut connection_handles: Vec<JoinHandle<()>> = Vec::with_capacity(connection_targets.len());
     let (tx, mut rx) = tokio::sync::mpsc::channel(connection_targets.len());
     
     let Some(first_target) = connection_targets.get_next_target() else {
         return Err(Hev3Error::NoRouteAvailable);
     };
 
-    handles.push(start_connection_concurrently(first_target, hostname, port, &tx));
+    connection_handles.push(start_connection_concurrently(first_target, hostname, port, &tx));
 
     let mut connection_timeout = Box::pin(tokio::time::sleep(config.connection_timeout));
     let mut connection_attempt_delay = create_cad(config);
@@ -35,9 +35,9 @@ pub async fn race_connections(
         // 4. the dns result channel is closed (all DNS lookups are finished)
         // -> nothing left to wait for
         if !connection_targets.has_remaining()
-            && all_handles_finished(&handles)
+            && all_handles_finished(&connection_handles)
             && rx.is_empty()
-            && dns_rx.is_closed()
+            && dns_resolver.rx.is_closed()
         {
             break;
         }
@@ -52,7 +52,7 @@ pub async fn race_connections(
             Some(result) = rx.recv() => {
                 match result {
                     Ok(_) => {
-                        abort_all_pending_tasks(&mut handles);
+                        abort_all_pending_tasks(&mut connection_handles, &mut dns_resolver);
                         return result;
                     }
                     // TODO: start next attempt immediately
@@ -67,7 +67,7 @@ pub async fn race_connections(
             //     A new connection attempt to the same target is started
             //     (or vice versa: first HTTPS, then A/AAAA)
             //     -> keep track of failed connection attempts?
-            Some(dns_result) = dns_rx.recv() => {
+            Some(dns_result) = dns_resolver.rx.recv() => {
                 trace!("New DNS result: {:?}", dns_result);
                 if matches!(dns_result, DnsResult::PositiveDnsResult(_)) {
                     connection_targets.add_dns_result(dns_result);
@@ -83,7 +83,8 @@ pub async fn race_connections(
             _ = &mut connection_attempt_delay, if connection_targets.has_remaining() => {
                 debug!("Connection attempt delay expired");
                 if let Some(next_target) = connection_targets.get_next_target() {
-                    handles.push(start_connection_concurrently(next_target, hostname, port, &tx));
+                    let handle = start_connection_concurrently(next_target, hostname, port, &tx);
+                    connection_handles.push(handle);
                     connection_attempt_delay = create_cad(config);
                 }
             }
@@ -96,7 +97,7 @@ pub async fn race_connections(
         }
     }
 
-    abort_all_pending_tasks(&mut handles);
+    abort_all_pending_tasks(&mut connection_handles, &mut dns_resolver);
 
     Err(Hev3Error::NoRouteAvailable)
 }
@@ -130,9 +131,18 @@ fn all_handles_finished(handles: &Vec<JoinHandle<()>>) -> bool {
     handles.iter().all(|handle| handle.is_finished())
 }
 
-fn abort_all_pending_tasks(handles: &mut Vec<JoinHandle<()>>) {
-    for handle in handles {
+fn abort_all_pending_tasks(
+    connection_handles: &mut Vec<JoinHandle<()>>,
+    dns_resolver: &mut DnsResolver,
+) {
+    for handle in connection_handles {
         if !handle.is_finished() {
+            handle.abort();
+        }
+    }
+    for handle in dns_resolver.handles.lock().unwrap().iter() {
+        if !handle.is_finished() {
+            debug!("Aborting DNS handle");
             handle.abort();
         }
     }

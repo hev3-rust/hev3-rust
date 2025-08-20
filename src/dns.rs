@@ -16,7 +16,10 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{
+    sync::mpsc::{Receiver, Sender},
+    task::JoinHandle,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
@@ -51,6 +54,11 @@ pub enum DnsResult {
     NegativeDnsResult(RecordType),
 }
 
+pub struct DnsResolver {
+    pub rx: Receiver<DnsResult>,
+    pub handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // DNS resolution logic
 ////////////////////////////////////////////////////////////////////////////////
@@ -59,6 +67,7 @@ struct LookupContext {
     resolver: Arc<TokioResolver>,
     hostname: String,
     tx: Sender<DnsResult>,
+    task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     use_svcb_instead_of_https: bool,
     previous_lookups: Arc<Mutex<Vec<(String, RecordType)>>>,
 }
@@ -69,6 +78,7 @@ impl Clone for LookupContext {
             resolver: self.resolver.clone(),
             hostname: self.hostname.clone(),
             tx: self.tx.clone(),
+            task_handles: self.task_handles.clone(),
             use_svcb_instead_of_https: self.use_svcb_instead_of_https,
             previous_lookups: self.previous_lookups.clone(),
         }
@@ -79,13 +89,16 @@ pub fn init_queries(
     resolver: &TokioResolver,
     hostname: &str,
     use_svcb_instead_of_https: bool,
-) -> Receiver<DnsResult> {
+) -> DnsResolver {
     let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+    let task_handles = Arc::new(Mutex::new(Vec::new()));
 
     let context = LookupContext {
         resolver: Arc::new(resolver.clone()),
         hostname: hostname.to_string(),
         tx,
+        task_handles: task_handles.clone(),
         use_svcb_instead_of_https,
         previous_lookups: Arc::new(Mutex::new(Vec::new())),
     };
@@ -96,14 +109,18 @@ pub fn init_queries(
     start_dns_lookup_concurrently(RecordType::AAAA, &context);
     start_dns_lookup_concurrently(RecordType::A, &context);
 
-    rx
+    DnsResolver {
+        rx,
+        handles: task_handles,
+    }
 }
 
 fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContext) {
+    let task_handles = context.task_handles.clone();
     let context = context.clone();
 
     // TODO: save handles so that they can be aborted if a connection has been established
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         if save_in_previous_lookups(record_type, &context).is_err() {
             return;
         }
@@ -120,6 +137,8 @@ fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContex
             }
         }
     });
+
+    task_handles.lock().unwrap().push(handle);
 }
 
 fn save_in_previous_lookups(

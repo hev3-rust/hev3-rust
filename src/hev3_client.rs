@@ -46,19 +46,24 @@ impl Hev3 {
     }
 
     pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
-        let mut rx = dns::init_queries(
+        let mut dns_resolver = dns::init_queries(
             &self.resolver,
             hostname,
             self.config.use_svcb_instead_of_https,
         );
-        let dns_results = dns::wait_for_dns_results(&mut rx, self.config.resolution_delay).await?;
 
-        let mut connection_targets = ConnectionTargetList::new(dns_results);
+        let initial_dns_results = dns::wait_for_dns_results(
+            &mut dns_resolver.rx,
+            self.config.resolution_delay
+        ).await?;
+
+        let mut connection_targets = ConnectionTargetList::new(initial_dns_results);
         address_sorting::sort_addresses(
             &mut connection_targets,
             self.config.preferred_address_family_count,
         );
 
-        racing::race_connections(connection_targets, hostname, port, &mut rx, &self.config).await
+        racing::race_connections(connection_targets, hostname, port, dns_resolver, &self.config)
+            .await
     }
 }
