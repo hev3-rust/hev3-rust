@@ -2,7 +2,7 @@ use crate::hev3_client::{Hev3Error, Result};
 use hickory_proto::rr::{
     rdata::{
         https::HTTPS,
-        svcb::{SvcParamKey, SVCB},
+        svcb::{IpHint, SvcParamKey, SvcParamValue, SVCB},
         A, AAAA,
     },
     RData, Record, RecordType
@@ -90,6 +90,7 @@ pub fn init_queries(
         previous_lookups: Arc::new(Mutex::new(Vec::new())),
     };
 
+    // TODO: when IPv4 only, then dont send AAAA query
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
     start_dns_lookup_concurrently(svcb_type, &context);
     start_dns_lookup_concurrently(RecordType::AAAA, &context);
@@ -101,15 +102,15 @@ pub fn init_queries(
 fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContext) {
     let context = context.clone();
 
+    // TODO: save handles so that they can be aborted if a connection has been established
     tokio::spawn(async move {
         if save_in_previous_lookups(record_type, &context).is_err() {
             return;
         }
 
         debug!("Starting {} lookup for {}", record_type, context.hostname);
-        let result = context.resolver.lookup(&context.hostname, record_type).await;
 
-        match result {
+        match context.resolver.lookup(&context.hostname, record_type).await {
             Ok(lookup) => handle_successful_lookup(lookup, &context).await,
             Err(e) => {
                 info!("DNS resolution error for {}: {:?}", record_type, e.to_string());
@@ -472,15 +473,19 @@ impl HasIpHint for SVCB {
     fn get_ipv4_hint_value(&self) -> Option<Vec<A>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| key == &SvcParamKey::Ipv4Hint && value.is_ipv4_hint())
-            .map(|(_, value)| value.as_ipv4_hint().unwrap().0.clone())
+            .find_map(|(key, value)| match (key, value) {
+                (SvcParamKey::Ipv4Hint, SvcParamValue::Ipv4Hint(IpHint(ips))) => Some(ips.clone()),
+                _ => None,
+            })
     }
 
     fn get_ipv6_hint_value(&self) -> Option<Vec<AAAA>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| key == &SvcParamKey::Ipv6Hint && value.is_ipv6_hint())
-            .map(|(_, value)| value.as_ipv6_hint().unwrap().0.clone())
+            .find_map(|(key, value)| match (key, value) {
+                (SvcParamKey::Ipv6Hint, SvcParamValue::Ipv6Hint(IpHint(ips))) => Some(ips.clone()),
+                _ => None,
+            })
     }
 }
 
@@ -518,8 +523,12 @@ impl HasEchConfig for SVCB {
     fn get_ech_config(&self) -> Option<Vec<u8>> {
         self.svc_params()
             .iter()
-            .find(|(key, value)| key == &SvcParamKey::EchConfigList && value.is_ech_config_list())
-            .map(|(_, value)| value.as_ech_config_list().unwrap().0.clone())
+            .find_map(|(key, value)| match (key, value) {
+                (SvcParamKey::EchConfigList, SvcParamValue::EchConfigList(ech_config)) => {
+                    Some(ech_config.0.clone())
+                }
+                _ => None,
+            })
     }
 }
 

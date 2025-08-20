@@ -15,13 +15,12 @@ pub async fn race_connections(
     dns_rx: &mut Receiver<DnsResult>,
     config: &Hev3Config,
 ) -> Result<Hev3Stream> {
-    if !connection_targets.has_remaining() {
-        return Err(Hev3Error::NoRouteAvailable);
-    }
     let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(connection_targets.len());
     let (tx, mut rx) = tokio::sync::mpsc::channel(connection_targets.len());
-
-    let first_target = connection_targets.get_next_target().unwrap();
+    
+    let Some(first_target) = connection_targets.get_next_target() else {
+        return Err(Hev3Error::NoRouteAvailable);
+    };
 
     handles.push(start_connection_concurrently(first_target, hostname, port, &tx));
 

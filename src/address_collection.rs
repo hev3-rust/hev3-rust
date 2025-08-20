@@ -178,31 +178,15 @@ impl ConnectionTargetList {
 
         // Add targets for IP hints in SVCB records if the corresponding record (A/AAAA)
         // has not been received yet.
-        if svcb.has_ipv4_hint() && !has_ipv4_targets {
-            for protocol in self.get_supported_protocols(&svcb) {
-                for ip_hint in svcb.get_ipv4_hint_value().unwrap() {
-                    self.add_connection_target(
-                        &domain,
-                        ip_hint.0.into(),
-                        protocol.clone(),
-                        u16::MAX,
-                        None,
-                        true,
-                    );
-                }
+        if !has_ipv4_targets {
+            if let Some(ipv4_hints) = svcb.get_ipv4_hint_value() {
+                let ips = ipv4_hints.iter().map(|hint| hint.0.into()).collect();
+                self.add_connection_targets_from_ip_hints(&domain, ips, &svcb);
             }
-        } else if svcb.has_ipv6_hint() && !has_ipv6_targets {
-            for protocol in self.get_supported_protocols(&svcb) {
-                for ip_hint in svcb.get_ipv6_hint_value().unwrap() {
-                    self.add_connection_target(
-                        &domain,
-                        ip_hint.0.into(),
-                        protocol.clone(),
-                        u16::MAX,
-                        None,
-                        true,
-                    );
-                }
+        } else if !has_ipv6_targets {
+            if let Some(ipv6_hints) = svcb.get_ipv6_hint_value() {
+                let ips = ipv6_hints.iter().map(|hint| hint.0.into()).collect();
+                self.add_connection_targets_from_ip_hints(&domain, ips, &svcb);
             }
         }
 
@@ -211,6 +195,27 @@ impl ConnectionTargetList {
             .entry(domain)
             .or_insert_with(Vec::new)
             .push(svcb);
+    }
+
+    fn add_connection_targets_from_ip_hints(
+        &mut self,
+        domain: &str,
+        ip_hints: Vec<IpAddr>,
+        svcb: &SVCB,
+    ) {
+        let ech_config = svcb.get_ech_config();
+        for protocol in self.get_supported_protocols(&svcb) {
+            for ip_addr in ip_hints.iter() {
+                self.add_connection_target(
+                    &domain,
+                    *ip_addr,
+                    protocol.clone(),
+                    svcb.svc_priority(),
+                    ech_config.clone(),
+                    true,
+                );
+            }
+        }
     }
 
     fn get_supported_protocols(&self, svcb: &SVCB) -> Vec<Protocol> {
