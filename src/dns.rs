@@ -119,7 +119,6 @@ fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContex
     let task_handles = context.task_handles.clone();
     let context = context.clone();
 
-    // TODO: save handles so that they can be aborted if a connection has been established
     let handle = tokio::spawn(async move {
         if save_in_previous_lookups(record_type, &context).is_err() {
             return;
