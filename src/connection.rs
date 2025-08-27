@@ -60,7 +60,7 @@ pub async fn connect_quic(
     let endpoint = create_quic_endpoint(address)?;
     let server_socket_addr = SocketAddr::new(address, port);
 
-    debug!("Starting QUIC connection to {}", address); // TODO measure time
+    debug!("Starting QUIC connection to {}", address);
     let connection = endpoint
         .connect(server_socket_addr, server_name)
         .map_err(Hev3Error::map_quic_error(address))?

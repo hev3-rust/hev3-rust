@@ -323,7 +323,7 @@ pub async fn wait_for_dns_results(
                         
                         if preferred_family_result_received && svcb_result_received {
                             debug!("Received an answer for the preferred family and SVCB/HTTPS, \
-                                    continue to address sorting"); // TODO measure time
+                                    continue to address sorting");
                             return Ok(dns_results);
                         }
                     }
