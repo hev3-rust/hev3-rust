@@ -2,7 +2,7 @@
 name = "hev3-rust"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Kevin Klein <kevin.klein@student.hpi.uni-potsdam.de>"]
 description = "Happy Eyeballs Version 3 implementation in Rust"
 
 [dependencies]

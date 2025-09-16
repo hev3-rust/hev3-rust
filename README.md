@@ -21,7 +21,15 @@ The following parts of the HEv3 specification draft are currently not implemente
 
 ## Usage
 
-With default configuration:
+Include the `hev3-rust` crate in your Cargo.toml:
+
+```toml
+[dependencies]
+hev3-rust = { path = "../hev3-repo" }
+# TODO update when on github or released on crates.io
+```
+
+To use the default configuration copy the following into your main.rs:
 
 ```rust
 use hev3_rust::{Hev3, Hev3Config};
@@ -47,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Define a custom configuration:
+Or define a custom configuration:
 
 ```rust
     [...]
@@ -64,6 +72,8 @@ Define a custom configuration:
     [...]
 ```
 
+Also, have a look at the `examples` folder.
+
 ## Configuration
 
 The `Hev3Config` struct allows you to customize the behavior:
@@ -73,3 +83,21 @@ The `Hev3Config` struct allows you to customize the behavior:
 - `connection_timeout`: Maximum time to wait for connection establishment
 - `preferred_address_family_count`: Number of IPv6 addresses to try before starting an IPv4 connection attempt
 - `use_svcb_instead_of_https`: By default, hev3-rust resolves HTTPS RRs. This option can be used to tell hev3-rust to issue SVCB queries instead.
+
+## Compiling the library
+
+Make sure you have the rust compiler and cargo installed, as described here: https://www.rust-lang.org/tools/install
+
+Then, in the repo directory, run
+
+```sh
+cargo build
+```
+
+or 
+
+```sh
+cargo build --release
+```
+
+to build with release optimizations.
