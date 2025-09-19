@@ -1,5 +1,5 @@
 [package]
-name = "hev3-example"
+name = "hev3-example-custom-resolver"
 version = "0.1.0"
 edition = "2024"
 authors = ["Your Name <your.email@example.com>"]
@@ -10,3 +10,12 @@ hev3-rust = { path = "../.." } # TODO update when on github or released on crate
 tokio = { version = "1.36", features = ["full"] }
 log = "0.4.28"
 env_logger = "0.11.8"
+hickory-resolver = { version = "0.25.2", features = [
+    # enable only the feature you need, or none for plain DNS
+    "tls-aws-lc-rs",
+    "https-aws-lc-rs",
+    "h3-aws-lc-rs",
+    # this feature is always needed if you use one of the three features above
+    "webpki-roots"
+]}
+rustls = "0.23.31"
