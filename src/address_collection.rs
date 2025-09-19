@@ -3,7 +3,7 @@ use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
     RData,
 };
-use tracing::trace;
+use log::trace;
 use std::collections::HashMap;
 use std::{collections::VecDeque, net::IpAddr};
 

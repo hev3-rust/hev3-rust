@@ -1,7 +1,7 @@
 use crate::dns::{Protocol, AddressFamily};
 use crate::address_collection::{ConnectionTargetList, ConnectionTarget};
 use std::net::IpAddr;
-use tracing::{debug, trace};
+use log::{debug, trace};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
