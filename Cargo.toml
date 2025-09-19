@@ -10,7 +10,7 @@ tokio = { version = "1.36", features = ["full"] }
 hickory-resolver = "0.25.2"
 hickory-proto = "0.25.2"
 log = "0.4.28"
-thiserror = "1.0"
+thiserror = "2.0"
 tokio-rustls = "0.26.3"
 rustls = "0.23.31"
 webpki-roots = "1.0"

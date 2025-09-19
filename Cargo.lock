@@ -418,7 +418,7 @@ dependencies = [
  "quinn",
  "rand",
  "rustls",
- "thiserror 1.0.69",
+ "thiserror 2.0.16",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
