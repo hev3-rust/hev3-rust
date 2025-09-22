@@ -1,7 +1,7 @@
 use crate::dns::{Protocol, AddressFamily};
 use crate::address_collection::{ConnectionTargetList, ConnectionTarget};
 use std::net::IpAddr;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
@@ -73,7 +73,11 @@ fn group_by_protocol_and_security(targets: Vec<ConnectionTarget>) -> Vec<Vec<Con
             (Some(Protocol::Tcp), Some(Protocol::Quic)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
-            _ => Ordering::Equal,
+            _ => {
+                warn!("Two groups with same protocol and security requirements: {:?} and ECH={:?}", 
+                    a.0.protocol, b.0.has_ech);
+                Ordering::Equal
+            }
         }
     });
     
@@ -200,7 +204,6 @@ fn interleave_address_families(
     result
 }
 
-// TODO: check validity of unit tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,14 +211,14 @@ mod tests {
     fn create_connection_target(
         domain: &str,
         ip: &str, 
-        protocol: Protocol, 
+        protocol: Option<Protocol>, 
         priority: u16,
         ech_config: Option<Vec<u8>>
     ) -> ConnectionTarget {
         ConnectionTarget{
             domain: domain.to_string(),
             address: ip.parse().unwrap(),
-            protocol: Some(protocol),
+            protocol,
             priority,
             ech_config,
             is_from_svcb: false,
@@ -238,62 +241,63 @@ mod tests {
         assert!(list.targets.is_empty());
     }
 
-    #[test] 
-    fn test_single_target() {
-        let target = create_connection_target("example.com", "192.168.1.1", Protocol::Tcp, 10, None);
-        let mut list = create_connection_target_list(vec![target]);
-        
-        sort_addresses(&mut list, 1);
-        
-        assert_eq!(list.targets.len(), 1);
-        assert_eq!(list.targets[0].address.to_string(), "192.168.1.1");
-    }
-
     #[test]
-    fn test_protocol_security_grouping() {
+    fn test_protocol_and_ech_grouping() {
         let targets = vec![
-            create_connection_target("example.com", "192.168.1.1", Protocol::Tcp, 10, None),
-            create_connection_target("example.com", "192.168.1.2", Protocol::Tcp, 10, Some(vec![1, 2, 3])), // ECH
-            create_connection_target("example.com", "192.168.1.3", Protocol::Quic, 10, None),
+            // Service Priorities should be ignored, because all targets are their own group in step 1
+            create_connection_target("example.com", "192.168.1.1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "192.168.1.2", Some(Protocol::Tcp), 2, Some(vec![1, 2, 3])),
+            create_connection_target("example.com", "192.168.1.3", None, u16::MAX, None),
+            create_connection_target("example.com", "192.168.1.4", Some(Protocol::Quic), 3, None),
+            create_connection_target("example.com", "192.168.1.5", Some(Protocol::Quic), 4, Some(vec![1, 2, 3])),
         ];
+
         let mut list = create_connection_target_list(targets);
-        
         sort_addresses(&mut list, 1);
         
-        assert_eq!(list.targets.len(), 3);
-        // ECH should come first, then by protocol priority (QUIC > TCP)
+        assert_eq!(list.targets.len(), 5);
+        // 1: QUIC + ECH
         assert!(list.targets[0].has_ech_config());
-        assert_eq!(list.targets[1].protocol, Some(Protocol::Quic));
-        assert_eq!(list.targets[2].protocol, Some(Protocol::Tcp));
+        assert_eq!(list.targets[0].protocol, Some(Protocol::Quic));
+        // 2: TCP + ECH
+        assert!(list.targets[1].has_ech_config());
+        assert_eq!(list.targets[1].protocol, Some(Protocol::Tcp));
+        // 3: QUIC, no ECH
+        assert_eq!(list.targets[2].protocol, Some(Protocol::Quic));
         assert!(!list.targets[2].has_ech_config());
+        // 4: TCP, no ECH
+        assert_eq!(list.targets[3].protocol, Some(Protocol::Tcp));
+        assert!(!list.targets[3].has_ech_config());
+        // 5: no SVCB information
+        assert_eq!(list.targets[4].protocol, None);
     }
 
     #[test]
     fn test_service_priority_grouping() {
         let targets = vec![
-            create_connection_target("example.com", "192.168.1.1", Protocol::Tcp, 20, None),
-            create_connection_target("example.com", "192.168.1.2", Protocol::Tcp, 10, None), // Lower priority first
-            create_connection_target("example.com", "192.168.1.3", Protocol::Tcp, 30, None),
+            create_connection_target("example.com", "192.168.1.1", Some(Protocol::Tcp), 2, None),
+            create_connection_target("example.com", "192.168.1.2", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "192.168.1.3", Some(Protocol::Tcp), 3, None),
         ];
+
         let mut list = create_connection_target_list(targets);
-        
         sort_addresses(&mut list, 1);
         
         assert_eq!(list.targets.len(), 3);
         // Should be sorted by priority (lower values first)
-        assert_eq!(list.targets[0].priority, 10);
-        assert_eq!(list.targets[1].priority, 20);
-        assert_eq!(list.targets[2].priority, 30);
+        assert_eq!(list.targets[0].priority, 1);
+        assert_eq!(list.targets[1].priority, 2);
+        assert_eq!(list.targets[2].priority, 3);
     }
 
     #[test]
     fn test_address_family_preference() {
         let targets = vec![
-            create_connection_target("example.com", "192.168.1.1", Protocol::Tcp, 10, None),
-            create_connection_target("example.com", "2001:db8::1", Protocol::Tcp, 10, None), // IPv6 preferred
+            create_connection_target("example.com", "192.168.1.1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::1", Some(Protocol::Tcp), 1, None),
         ];
+
         let mut list = create_connection_target_list(targets);
-        
         sort_addresses(&mut list, 1);
         
         assert_eq!(list.targets.len(), 2);
@@ -303,36 +307,52 @@ mod tests {
     }
 
     #[test]
-    fn test_full_3level_grouping() {
+    fn test_interleaving() {
         let targets = vec![
-            // Group 1: TCP + ECH, priority 20
-            create_connection_target("example.com", "192.168.1.1", Protocol::Tcp, 20, Some(vec![1,2,3])),
-            create_connection_target("example.com", "2001:db8::1", Protocol::Tcp, 20, Some(vec![1,2,3])),
-            
-            // Group 2: TCP + ECH, priority 10 (higher priority)  
-            create_connection_target("example.com", "192.168.1.2", Protocol::Tcp, 10, Some(vec![1,2,3])),
-            create_connection_target("example.com", "2001:db8::2", Protocol::Tcp, 10, Some(vec![1,2,3])),
-            
-            // Group 3: QUIC, no ECH, priority 10
-            create_connection_target("example.com", "192.168.1.3", Protocol::Quic, 10, None),
-            create_connection_target("example.com", "2001:db8::3", Protocol::Quic, 10, None),
+            create_connection_target("example.com", "192.168.1.1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "192.168.1.2", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::2", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::3", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::4", Some(Protocol::Tcp), 1, None),
         ];
+
         let mut list = create_connection_target_list(targets);
-        
         sort_addresses(&mut list, 1);
         
         assert_eq!(list.targets.len(), 6);
         
-        // First should be ECH+TCP, priority 10, IPv6 first
-        assert!(list.targets[0].has_ech_config());
-        assert_eq!(list.targets[0].protocol, Some(Protocol::Tcp));
-        assert_eq!(list.targets[0].priority, 10);
+        // Expected order: IPv6, IPv4, IPv6, IPv6, IPv6, IPv4
         assert!(list.targets[0].address.is_ipv6());
-        
-        // Second should be ECH+TCP, priority 10, IPv4 (interleaving)
-        assert!(list.targets[1].has_ech_config()); 
-        assert_eq!(list.targets[1].protocol, Some(Protocol::Tcp));
-        assert_eq!(list.targets[1].priority, 10);
         assert!(list.targets[1].address.is_ipv4());
+        assert!(list.targets[2].address.is_ipv6());
+        assert!(list.targets[3].address.is_ipv6());
+        assert!(list.targets[4].address.is_ipv6());
+        assert!(list.targets[5].address.is_ipv4());
+    }
+
+    #[test]
+    fn test_interleaving_with_preferred_count_2() {
+        let targets = vec![
+            create_connection_target("example.com", "192.168.1.1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "192.168.1.2", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::1", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::2", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::3", Some(Protocol::Tcp), 1, None),
+            create_connection_target("example.com", "2001:db8::4", Some(Protocol::Tcp), 1, None),
+        ];
+
+        let mut list = create_connection_target_list(targets);
+        sort_addresses(&mut list, 2);
+        
+        assert_eq!(list.targets.len(), 6);
+        
+        // Expected order: IPv6, IPv6, IPv4, IPv6, IPv6, IPv4
+        assert!(list.targets[0].address.is_ipv6());
+        assert!(list.targets[1].address.is_ipv6());
+        assert!(list.targets[2].address.is_ipv4());
+        assert!(list.targets[3].address.is_ipv6());
+        assert!(list.targets[4].address.is_ipv6());
+        assert!(list.targets[5].address.is_ipv4());
     }
 }
