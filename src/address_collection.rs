@@ -1,4 +1,5 @@
 use crate::dns::{AddressFamily, DnsResult, HasAlpn, HasEchConfig, HasIpHint, Protocol};
+use crate::hev3_client::is_ipv6_available;
 use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
     RData,
@@ -192,7 +193,7 @@ impl ConnectionTargetList {
         }
         let has_ipv6_targets = self.targets.iter()
             .any(|target| target.domain == domain && target.address.is_ipv6());
-        if !has_ipv6_targets {
+        if !has_ipv6_targets && is_ipv6_available() {
             if let Some(ipv6_hints) = svcb.get_ipv6_hint_value() {
                 let ips = ipv6_hints.iter().map(|hint| hint.0.into()).collect();
                 self.add_connection_targets_from_ip_hints(&domain, ips, &svcb, &supported_protocols);

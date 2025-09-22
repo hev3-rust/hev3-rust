@@ -2,11 +2,20 @@ use crate::address_collection::ConnectionTargetList;
 use crate::connection::Hev3Stream;
 use crate::{address_sorting, dns, racing};
 use hickory_resolver::{Resolver, TokioResolver};
+use pnet::datalink;
+use rustls::lock::Mutex;
+use std::net::IpAddr;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 pub use crate::errors::Hev3Error;
 
 pub type Result<T> = std::result::Result<T, Hev3Error>;
+
+static IPV6_AVAILABLE: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(true));
+pub fn is_ipv6_available() -> bool {
+    *IPV6_AVAILABLE.lock().unwrap()
+}
 
 // TODO: Builder?
 #[derive(Debug, Clone)]
@@ -46,6 +55,8 @@ impl Hev3 {
     }
 
     pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
+        check_ipv6_available();
+
         let mut dns_resolver = dns::init_queries(
             &self.resolver,
             hostname,
@@ -66,4 +77,19 @@ impl Hev3 {
         racing::race_connections(connection_targets, hostname, port, dns_resolver, &self.config)
             .await
     }
+}
+
+fn check_ipv6_available() {
+    let mut ipv6 = IPV6_AVAILABLE.lock().unwrap();
+    *ipv6 = datalink::interfaces().iter()
+        .filter(|interface| interface.is_up() && !interface.is_loopback())
+        .flat_map(|interface| interface.ips.iter())
+        .any(|ip| {
+            match ip.ip() {
+                IpAddr::V6(ip) => {
+                    !ip.is_unicast_link_local() && !ip.is_loopback() && !ip.is_unspecified()
+                }
+                _ => false,
+            }
+        })
 }

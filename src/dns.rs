@@ -1,4 +1,4 @@
-use crate::hev3_client::{Hev3Error, Result};
+use crate::hev3_client::{Hev3Error, Result, is_ipv6_available};
 use hickory_proto::rr::{
     rdata::{
         https::HTTPS,
@@ -9,7 +9,6 @@ use hickory_proto::rr::{
 };
 use hickory_resolver::{lookup::Lookup, TokioResolver};
 use log::{debug, info, warn};
-use pnet::datalink;
 use rand::seq::IndexedRandom;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -106,7 +105,9 @@ pub fn init_queries(
     // TODO: when IPv4 only, then dont send AAAA query
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
     start_dns_lookup_concurrently(svcb_type, &context);
-    start_dns_lookup_concurrently(RecordType::AAAA, &context);
+    if is_ipv6_available() {
+        start_dns_lookup_concurrently(RecordType::AAAA, &context);
+    }
     start_dns_lookup_concurrently(RecordType::A, &context);
 
     DnsResolver {
@@ -258,7 +259,9 @@ fn resolve_alternative_target_names(svcb_records: &Vec<Record>, context: &Lookup
             new_context.hostname = svcb.target_name().to_utf8();
         }
     
-        start_dns_lookup_concurrently(RecordType::AAAA, &new_context);
+        if is_ipv6_available() {
+            start_dns_lookup_concurrently(RecordType::AAAA, &new_context);
+        }
         start_dns_lookup_concurrently(RecordType::A, &new_context);
     }
 }
@@ -341,20 +344,6 @@ pub async fn wait_for_dns_results(
             }
         }
     }
-}
-
-fn is_ipv6_available() -> bool {
-    datalink::interfaces().iter()
-        .filter(|interface| interface.is_up() && !interface.is_loopback())
-        .flat_map(|interface| interface.ips.iter())
-        .any(|ip| {
-            match ip.ip() {
-                IpAddr::V6(ip) => {
-                    !ip.is_unicast_link_local() && !ip.is_loopback() && !ip.is_unspecified()
-                }
-                _ => false,
-            }
-        })
 }
 
 async fn wait_for_first_address(rx: &mut Receiver<DnsResult>) -> Result<Vec<DnsResult>> {
