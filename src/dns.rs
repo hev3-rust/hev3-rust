@@ -508,26 +508,17 @@ impl HasIpHint for SVCB {
 }
 
 pub trait HasAlpn {
-    fn has_alpn_param(&self) -> bool;
-
-    /// Determines whether the record has an alpn param and the alpn id is present.
-    /// Returns false if the record does not have an alpn param.
-    fn has_alpn_id(&self, alpn_id: &str) -> bool;
+    /// Returns the value of the record's alpn param.
+    /// Returns None if the record does not have an alpn param.
+    fn get_alpn_ids(&self) -> Option<Vec<String>>;
 }
 
 impl HasAlpn for SVCB {
-    fn has_alpn_param(&self) -> bool {
+    fn get_alpn_ids(&self) -> Option<Vec<String>> {
         self.svc_params()
             .iter()
-            .any(|(key, value)| key == &SvcParamKey::Alpn && value.is_alpn())
-    }
-
-    fn has_alpn_id(&self, alpn_id: &str) -> bool {
-        self.svc_params().iter().any(|(key, value)| {
-            key == &SvcParamKey::Alpn
-                && value.is_alpn()
-                && value.as_alpn().unwrap().0.contains(&alpn_id.to_string())
-        })
+            .find(|(key, value)| key == &SvcParamKey::Alpn && value.is_alpn())
+            .map(|(_, value)| value.as_alpn().unwrap().0.clone())
     }
 }
 

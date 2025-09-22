@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 /// Key for grouping by protocol and security capabilities
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProtocolAndSecurityKey {
-    protocol: Protocol,
+    protocol: Option<Protocol>,
     has_ech: bool,
 }
 
@@ -43,9 +43,7 @@ pub fn sort_addresses(
     let sorted_groups = sort_by_destination_preferences(
         service_priority_groups, preferred_address_family_count);
 
-    for target in sorted_groups {
-        connection_target_list.targets.push_back(target);
-    }
+    connection_target_list.targets = sorted_groups;
 
     trace!("Sorted connection targets: {:?}", connection_target_list.targets);
 }
@@ -71,8 +69,10 @@ fn group_by_protocol_and_security(targets: Vec<ConnectionTarget>) -> Vec<Vec<Con
             _ => {}
         }
         match (&a.0.protocol, &b.0.protocol) {
-            (Protocol::Quic, Protocol::Tcp) => Ordering::Less,
-            (Protocol::Tcp, Protocol::Quic) => Ordering::Greater,
+            (Some(Protocol::Quic), Some(Protocol::Tcp)) => Ordering::Less,
+            (Some(Protocol::Tcp), Some(Protocol::Quic)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
             _ => Ordering::Equal,
         }
     });
@@ -215,7 +215,7 @@ mod tests {
         ConnectionTarget{
             domain: domain.to_string(),
             address: ip.parse().unwrap(),
-            protocol,
+            protocol: Some(protocol),
             priority,
             ech_config,
             is_from_svcb: false,
@@ -224,16 +224,16 @@ mod tests {
     }
 
     fn create_connection_target_list(targets: Vec<ConnectionTarget>) -> ConnectionTargetList {
-        let mut list = ConnectionTargetList::new(vec![]);
+        let mut list = ConnectionTargetList::empty();
         for target in targets {
-            list.targets.push_back(target);
+            list.targets.push(target);
         }
         list
     }
 
     #[test]
     fn test_empty_input() {
-        let mut list = ConnectionTargetList::new(vec![]);
+        let mut list = ConnectionTargetList::empty();
         sort_addresses(&mut list, 1);
         assert!(list.targets.is_empty());
     }
@@ -263,8 +263,8 @@ mod tests {
         assert_eq!(list.targets.len(), 3);
         // ECH should come first, then by protocol priority (QUIC > TCP)
         assert!(list.targets[0].has_ech_config());
-        assert_eq!(list.targets[1].protocol, Protocol::Quic);
-        assert_eq!(list.targets[2].protocol, Protocol::Tcp);
+        assert_eq!(list.targets[1].protocol, Some(Protocol::Quic));
+        assert_eq!(list.targets[2].protocol, Some(Protocol::Tcp));
         assert!(!list.targets[2].has_ech_config());
     }
 
@@ -325,13 +325,13 @@ mod tests {
         
         // First should be ECH+TCP, priority 10, IPv6 first
         assert!(list.targets[0].has_ech_config());
-        assert_eq!(list.targets[0].protocol, Protocol::Tcp);
+        assert_eq!(list.targets[0].protocol, Some(Protocol::Tcp));
         assert_eq!(list.targets[0].priority, 10);
         assert!(list.targets[0].address.is_ipv6());
         
         // Second should be ECH+TCP, priority 10, IPv4 (interleaving)
         assert!(list.targets[1].has_ech_config()); 
-        assert_eq!(list.targets[1].protocol, Protocol::Tcp);
+        assert_eq!(list.targets[1].protocol, Some(Protocol::Tcp));
         assert_eq!(list.targets[1].priority, 10);
         assert!(list.targets[1].address.is_ipv4());
     }
