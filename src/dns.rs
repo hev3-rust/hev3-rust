@@ -102,7 +102,6 @@ pub fn init_queries(
         previous_lookups: Arc::new(Mutex::new(Vec::new())),
     };
 
-    // TODO: when IPv4 only, then dont send AAAA query
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
     start_dns_lookup_concurrently(svcb_type, &context);
     if is_ipv6_available() {
