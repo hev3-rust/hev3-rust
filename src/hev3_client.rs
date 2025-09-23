@@ -23,8 +23,9 @@ pub struct Hev3Config {
     pub resolution_delay: Duration,
     pub connection_attempt_delay: Duration,
     pub connection_timeout: Duration,
-    pub preferred_address_family_count: usize,
+    pub preferred_address_family_count: u8,
     pub use_svcb_instead_of_https: bool,
+    pub max_svcb_aliases_to_follow: u8,
 }
 
 impl Default for Hev3Config {
@@ -35,6 +36,7 @@ impl Default for Hev3Config {
             connection_timeout: Duration::from_secs(20),
             preferred_address_family_count: 1,
             use_svcb_instead_of_https: false,
+            max_svcb_aliases_to_follow: 2,
         }
     }
 }
@@ -61,6 +63,7 @@ impl Hev3 {
             &self.resolver,
             hostname,
             self.config.use_svcb_instead_of_https,
+            self.config.max_svcb_aliases_to_follow,
         );
 
         let initial_dns_results = dns::wait_for_dns_results(

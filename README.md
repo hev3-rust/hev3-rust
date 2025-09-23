@@ -58,7 +58,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Or define a custom configuration:
 
 ```rust
-    [...]
     // Instead of:
     // let config = Hev3Config::default();
     // use:
@@ -68,8 +67,20 @@ Or define a custom configuration:
         connection_timeout: Duration::from_secs(5),
         preferred_address_family_count: 1,
         use_svcb_instead_of_https: false,
+        max_svcb_aliases_to_follow: 2,
     };
-    [...]
+```
+
+Or override only parts of the default configuration. For example, to only override the Connection Attempt Delay:
+
+```rust
+    // Instead of:
+    // let config = Hev3Config::default();
+    // use:
+    let config = Hev3Config {
+        connection_attempt_delay: Duration::from_millis(200),
+        ..Hev3Config::default()
+    };
 ```
 
 Also, have a look at the `examples` folder.
@@ -78,11 +89,12 @@ Also, have a look at the `examples` folder.
 
 The `Hev3Config` struct allows you to customize the behavior:
 
-- `resolution_delay`: Time to wait for AAAA records before proceeding with IPv4
-- `connection_attempt_delay`: Time to wait for a connection attempt before starting the next
-- `connection_timeout`: Maximum time to wait for connection establishment
-- `preferred_address_family_count`: Number of IPv6 addresses to try before starting an IPv4 connection attempt
-- `use_svcb_instead_of_https`: By default, hev3-rust resolves HTTPS RRs. This option can be used to tell hev3-rust to issue SVCB queries instead.
+- `resolution_delay`: Time to wait for AAAA and SVCB/HTTPS records before proceeding (default: 50ms)
+- `connection_attempt_delay`: Time to wait for a connection attempt before starting the next (default: 250ms)
+- `connection_timeout`: Maximum time to wait for connection establishment (default: 20s)
+- `preferred_address_family_count`: Number of IPv6 addresses to try before starting an IPv4 connection attempt (default: 1)
+- `use_svcb_instead_of_https`: Issue SVCB queries instead of HTTPS. By default, hev3-rust resolves HTTPS RRs (default: false)
+- `max_svcb_aliases_to_follow`: Maximum number of chained SVCB alias records to follow when resolving service bindings (default: 2)
 
 ## Compiling the library
 

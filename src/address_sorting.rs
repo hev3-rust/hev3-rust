@@ -27,7 +27,7 @@ struct ServiceKey {
 /// 3. Sorting by destination address preferences within groups
 pub fn sort_addresses(
     connection_target_list: &mut ConnectionTargetList, 
-    preferred_address_family_count: usize
+    preferred_address_family_count: u8
 ) {
     if connection_target_list.targets.is_empty() {
         return;
@@ -125,7 +125,7 @@ fn group_by_service_priority(
 /// Addresses are interleaved within each group.
 fn sort_by_destination_preferences(
     service_priority_groups: Vec<Vec<ConnectionTarget>>,
-    preferred_address_family_count: usize
+    preferred_address_family_count: u8
 ) -> Vec<ConnectionTarget> {
     let mut final_targets = Vec::new();
     
@@ -154,7 +154,7 @@ fn sort_by_destination_preferences(
 /// 3. Add the rest of the targets.
 fn interleave_address_families(
     targets: Vec<ConnectionTarget>,
-    preferred_count: usize
+    preferred_count: u8
 ) -> Vec<ConnectionTarget> {
     if targets.is_empty() {
         return targets;
@@ -168,7 +168,7 @@ fn interleave_address_families(
 
     // Take preferred_count targets of the preferred family from the front of the list.
     // If there are targets of the non-preferred family in between, move them aside to insert later.
-    while result.len() < preferred_count {
+    while result.len() < preferred_count as usize {
         if let Some(target) = targets.pop_front() {
             if preferred_family.matches(&target.address) {
                 result.push(target);

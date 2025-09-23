@@ -69,6 +69,7 @@ struct LookupContext {
     task_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     use_svcb_instead_of_https: bool,
     previous_lookups: Arc<Mutex<Vec<(String, RecordType)>>>,
+    svcb_aliases_counter: u8,
 }
 
 impl Clone for LookupContext {
@@ -80,6 +81,7 @@ impl Clone for LookupContext {
             task_handles: self.task_handles.clone(),
             use_svcb_instead_of_https: self.use_svcb_instead_of_https,
             previous_lookups: self.previous_lookups.clone(),
+            svcb_aliases_counter: self.svcb_aliases_counter,
         }
     }
 }
@@ -88,6 +90,7 @@ pub fn init_queries(
     resolver: &TokioResolver,
     hostname: &str,
     use_svcb_instead_of_https: bool,
+    max_svcb_aliases_to_follow: u8,
 ) -> DnsResolver {
     let (tx, rx) = tokio::sync::mpsc::channel(32);
 
@@ -100,6 +103,7 @@ pub fn init_queries(
         task_handles: task_handles.clone(),
         use_svcb_instead_of_https,
         previous_lookups: Arc::new(Mutex::new(Vec::new())),
+        svcb_aliases_counter: max_svcb_aliases_to_follow,
     };
 
     let svcb_type = get_svcb_type(use_svcb_instead_of_https);
@@ -203,7 +207,7 @@ async fn handle_svcb_records(svcb_records: Vec<Record>, context: &LookupContext)
         .filter(|r| r.svc_priority() == 0)
         .collect();
 
-    // If we have alias records, ignore any service mode records [RFC 9460].
+    // If we have alias records, ignore any service mode records [RFC 9460, Section 2.4.1].
     // Otherwise, send all records over the DnsResult channel.
     if !alias_records.is_empty() {
         handle_svcb_alias_mode_records(alias_records, context);
@@ -215,6 +219,9 @@ async fn handle_svcb_records(svcb_records: Vec<Record>, context: &LookupContext)
 
 /// Chooses one target name randomly from the alias records and resolves it [RFC 9460]
 fn handle_svcb_alias_mode_records(alias_records: Vec<&SVCB>, context: &LookupContext) {
+    // RFC 9460, Section 2.4.2:
+    // "SVCB RRsets SHOULD only have a single RR in AliasMode. If multiple AliasMode RRs are 
+    // present, clients or recursive resolvers SHOULD pick one at random."
     if let Some(record) = alias_records.choose(&mut rand::rng()) {
         if record.target_name().is_root() {
             // RFC 9460, Section 2.5.1:
@@ -226,15 +233,17 @@ fn handle_svcb_alias_mode_records(alias_records: Vec<&SVCB>, context: &LookupCon
             return;
         }
 
-        let mut new_context = context.clone();
-        new_context.hostname = record.target_name().to_utf8();
+        // loop detection
+        if context.svcb_aliases_counter > 0 {
+            let mut new_context = context.clone();
+            new_context.hostname = record.target_name().to_utf8();
+            new_context.svcb_aliases_counter -= 1;
 
-        // TODO loop detection
-        // TODO in case of an alias chain, start A/AAAA lookups for the last alias name
-        start_dns_lookup_concurrently(
-            get_svcb_type(context.use_svcb_instead_of_https),
-            &new_context,
-        );
+            start_dns_lookup_concurrently(
+                get_svcb_type(context.use_svcb_instead_of_https),
+                &new_context,
+            );
+        }
     }
 }
 
