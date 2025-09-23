@@ -289,7 +289,7 @@ fn create_connection_targets(
         is_from_svcb,
         used: false,
     };
-    if let Some(ref protocols) = supported_protocols {
+    if let Some(protocols) = supported_protocols {
         return clone_connection_target_per_protocol(&target, protocols);
     } else {
         return vec![target];
