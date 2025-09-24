@@ -1,4 +1,4 @@
-use crate::dns::{AddressFamily, DnsResult, HasAlpn, HasEchConfig, HasIpHint, Protocol};
+use crate::dns::{AddressFamily, DnsResult, HasAlpn, HasEchConfig, HasIpHint, Protocol, EchConfigList};
 use crate::hev3_client::is_ipv6_available;
 use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
@@ -14,7 +14,7 @@ pub struct ConnectionTarget {
     pub address: IpAddr,
     pub protocol: Option<Protocol>,
     pub priority: u16,
-    pub ech_config: Option<Vec<u8>>,
+    pub ech_config: Option<EchConfigList>,
     pub is_from_svcb: bool,
     pub used: bool,
 }
@@ -227,7 +227,7 @@ impl ConnectionTargetList {
         address: IpAddr,
         protocol: Option<Protocol>,
         priority: u16,
-        ech_config: Option<Vec<u8>>,
+        ech_config: Option<EchConfigList>,
         is_from_svcb: bool,
     ) {
         self.targets.push(ConnectionTarget {

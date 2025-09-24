@@ -3,18 +3,22 @@ use crate::connection::Hev3Stream;
 use crate::{address_sorting, dns, racing};
 use hickory_resolver::{Resolver, TokioResolver};
 use pnet::datalink;
-use rustls::lock::Mutex;
 use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub use crate::errors::Hev3Error;
 
 pub type Result<T> = std::result::Result<T, Hev3Error>;
 
-static IPV6_AVAILABLE: LazyLock<Mutex<bool>> = LazyLock::new(|| Mutex::new(true));
+static IPV6_AVAILABLE: OnceLock<bool> = OnceLock::new();
 pub fn is_ipv6_available() -> bool {
-    *IPV6_AVAILABLE.lock().unwrap()
+    *IPV6_AVAILABLE.get_or_init(check_ipv6_available)
+}
+
+static NATIVE_CERTS: OnceLock<Arc<rustls::RootCertStore>> = OnceLock::new();
+pub fn get_native_certs() -> Arc<rustls::RootCertStore> {
+    NATIVE_CERTS.get_or_init(load_native_certs).clone()
 }
 
 // TODO: Builder?
@@ -57,7 +61,9 @@ impl Hev3 {
     }
 
     pub async fn connect(&self, hostname: &str, port: u16) -> Result<Hev3Stream> {
-        check_ipv6_available();
+        // init the OnceLocks
+        is_ipv6_available();
+        get_native_certs();
 
         let mut dns_resolver = dns::init_queries(
             &self.resolver,
@@ -82,9 +88,8 @@ impl Hev3 {
     }
 }
 
-fn check_ipv6_available() {
-    let mut ipv6 = IPV6_AVAILABLE.lock().unwrap();
-    *ipv6 = datalink::interfaces().iter()
+fn check_ipv6_available() -> bool{
+    datalink::interfaces().iter()
         .filter(|interface| interface.is_up() && !interface.is_loopback())
         .flat_map(|interface| interface.ips.iter())
         .any(|ip| {
@@ -95,4 +100,12 @@ fn check_ipv6_available() {
                 _ => false,
             }
         })
+}
+
+fn load_native_certs() -> Arc<rustls::RootCertStore> {
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in rustls_native_certs::load_native_certs().expect("could not load platform certs") {
+        roots.add(cert).unwrap();
+    }
+    Arc::new(roots)
 }

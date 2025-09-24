@@ -207,6 +207,7 @@ fn interleave_address_families(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns::EchConfigList;
 
     fn create_connection_target(
         domain: &str,
@@ -220,7 +221,7 @@ mod tests {
             address: ip.parse().unwrap(),
             protocol,
             priority,
-            ech_config,
+            ech_config: ech_config.map(EchConfigList),
             is_from_svcb: false,
             used: false,
         }

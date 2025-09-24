@@ -20,6 +20,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+pub use hickory_proto::rr::rdata::svcb::EchConfigList;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Protocol {
     Tcp,
@@ -522,16 +524,16 @@ impl HasAlpn for SVCB {
 pub trait HasEchConfig {
     /// Returns the value of the record's ech_config param.
     /// Returns None if the record does not have an ech_config param.
-    fn get_ech_config(&self) -> Option<Vec<u8>>;
+    fn get_ech_config(&self) -> Option<EchConfigList>;
 }
 
 impl HasEchConfig for SVCB {
-    fn get_ech_config(&self) -> Option<Vec<u8>> {
+    fn get_ech_config(&self) -> Option<EchConfigList> {
         self.svc_params()
             .iter()
             .find_map(|(key, value)| match (key, value) {
                 (SvcParamKey::EchConfigList, SvcParamValue::EchConfigList(ech_config)) => {
-                    Some(ech_config.0.clone())
+                    Some(ech_config.clone())
                 }
                 _ => None,
             })
