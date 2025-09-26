@@ -7,7 +7,7 @@ use hickory_proto::rr::{
     },
     RData, Record, RecordType
 };
-use hickory_resolver::{lookup::Lookup, TokioResolver};
+use hickory_resolver::{lookup::Lookup, ResolveError, TokioResolver};
 use log::{debug, info, warn};
 use rand::seq::IndexedRandom;
 use std::{
@@ -134,12 +134,7 @@ fn start_dns_lookup_concurrently(record_type: RecordType, context: &LookupContex
 
         match context.resolver.lookup(&context.hostname, record_type).await {
             Ok(lookup) => handle_successful_lookup(lookup, &context).await,
-            Err(e) => {
-                info!("DNS resolution error for {}: {:?}", record_type, e.to_string());
-                // TODO: do the following only if "no records found". Other errors might have to be handled differently.
-                let negative_result = DnsResult::NegativeDnsResult(record_type);
-                context.tx.send(negative_result).await.unwrap();
-            }
+            Err(e) => handle_lookup_error(e, record_type, &context).await,
         }
     });
 
@@ -156,6 +151,16 @@ fn save_in_previous_lookups(
     }
     previous_lookups.push((context.hostname.clone(), record_type));
     Ok(())
+}
+
+async fn handle_lookup_error(e: ResolveError, record_type: RecordType, context: &LookupContext) {
+    if e.is_no_records_found() {
+        debug!("DNS resolution error for {}: {:?}", record_type, e.to_string());
+    } else {
+        warn!("DNS resolution error for {}: {:?}", record_type, e.to_string());
+    }
+    let negative_result = DnsResult::NegativeDnsResult(record_type);
+    context.tx.send(negative_result).await.unwrap();
 }
 
 async fn handle_successful_lookup(lookup: Lookup, context: &LookupContext) {

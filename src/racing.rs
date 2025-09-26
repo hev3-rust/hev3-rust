@@ -68,7 +68,6 @@ pub async fn race_connections(
             //     (or vice versa: first HTTPS, then A/AAAA)
             //     -> keep track of failed connection attempts?
             Some(dns_result) = dns_resolver.rx.recv() => {
-                trace!("New DNS result: {:?}", dns_result);
                 if matches!(dns_result, DnsResult::PositiveDnsResult(_)) {
                     connection_targets.add_dns_result(dns_result);
                     address_sorting::sort_addresses(

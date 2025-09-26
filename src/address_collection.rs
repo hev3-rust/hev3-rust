@@ -4,7 +4,7 @@ use hickory_proto::rr::{
     rdata::{a::A, aaaa::AAAA, https::HTTPS, svcb::SVCB},
     RData,
 };
-use log::trace;
+use log::debug;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
@@ -121,7 +121,7 @@ impl ConnectionTargetList {
                         )
                     }
                     Err(alpn_ids) => {
-                        trace!("ALPN param for domain {} does not contain any supported protocols: {:?}", 
+                        debug!("ALPN param for domain {} does not contain any supported protocols: {:?}", 
                             domain, alpn_ids);
                         // the service is not supported, so we don't add any targets
                     }
@@ -158,7 +158,7 @@ impl ConnectionTargetList {
         let supported_protocols = match get_supported_protocols(&svcb) {
             Ok(supported_protocols) => supported_protocols,
             Err(alpn_ids) => {
-                trace!("ALPN param for domain {} does not contain any supported protocols: {:?}", 
+                debug!("ALPN param for domain {} does not contain any supported protocols: {:?}", 
                     domain, alpn_ids);
                 return; // We can't use the information in this SVCB record
             }
