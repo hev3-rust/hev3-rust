@@ -21,7 +21,6 @@ pub fn get_native_certs() -> Arc<rustls::RootCertStore> {
     NATIVE_CERTS.get_or_init(load_native_certs).clone()
 }
 
-// TODO: Builder?
 #[derive(Debug, Clone)]
 pub struct Hev3Config {
     pub resolution_delay: Duration,
