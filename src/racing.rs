@@ -60,13 +60,6 @@ pub async fn race_connections(
                 }
             }
             // New DNS result -> include into connection targets list
-            // FIXME: might introduce a duplicate connection attempt if:
-            //     An A or AAAA record arrives and a connection is attempted
-            //     The connection attempt fails
-            //     An HTTPS record arrives with the same IP in an ipvXhint
-            //     A new connection attempt to the same target is started
-            //     (or vice versa: first HTTPS, then A/AAAA)
-            //     -> keep track of failed connection attempts?
             Some(dns_result) = dns_resolver.rx.recv() => {
                 if matches!(dns_result, DnsResult::PositiveDnsResult(_)) {
                     connection_targets.add_dns_result(dns_result);

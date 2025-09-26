@@ -66,18 +66,19 @@ impl ConnectionTargetList {
             return;
         };
         for record in records {
+            let record_name = record.name().to_utf8();
             match record.data() {
                 RData::A(A(ip)) => {
-                    self.remove_targets_from_svcb(record.name().to_utf8(), AddressFamily::IPv4);
-                    self.add_a_or_aaaa(record.name().to_utf8(), (*ip).into());
+                    self.remove_unused_targets_from_svcb(&record_name, AddressFamily::IPv4);
+                    self.add_a_or_aaaa(&record_name, (*ip).into());
                 }
                 RData::AAAA(AAAA(ip)) => {
-                    self.remove_targets_from_svcb(record.name().to_utf8(), AddressFamily::IPv6);
-                    self.add_a_or_aaaa(record.name().to_utf8(), (*ip).into());
+                    self.remove_unused_targets_from_svcb(&record_name, AddressFamily::IPv6);
+                    self.add_a_or_aaaa(&record_name, (*ip).into());
                 }
                 RData::HTTPS(HTTPS(svcb)) | RData::SVCB(svcb) => {
                     let domain = if svcb.target_name().is_root() {
-                        record.name().to_utf8()
+                        record_name
                     } else {
                         svcb.target_name().to_utf8()
                     };
@@ -88,28 +89,38 @@ impl ConnectionTargetList {
         }
     }
 
-    /// Removes all targets of a given address family that originate from IP hints in SVCB records
-    fn remove_targets_from_svcb(
+    /// Removes all unused targets of a given address family that originate from IP hints in SVCB records
+    fn remove_unused_targets_from_svcb(
         &mut self, 
-        domain: String, 
+        domain: &str, 
         address_family: AddressFamily
     ) {
         self.targets.retain(|target| {
             !(target.domain == domain
                 && address_family.matches(&target.address)
-                && target.is_from_svcb)
+                && target.is_from_svcb
+                && !target.used)
         });
     }
 
     fn add_a_or_aaaa(
         &mut self, 
-        domain: String, 
+        domain: &str, 
         ip: IpAddr
     ) {
-        let relevant_svcb_records = self.get_relevant_svcb_records_for_target(&domain, &ip);
+        let already_used = self.targets
+            .iter()
+            .any(|target| target.domain == domain && target.address == ip && target.used);
+        if already_used {
+            // If we already used this address (for example if it came from an SVCB iphint and
+            // a connection was already attempted), don't add it again
+            return;
+        }
+
+        let relevant_svcb_records = self.get_relevant_svcb_records_for_target(domain, &ip);
 
         if relevant_svcb_records.is_empty() {
-            self.add_connection_target(&domain, ip, None, u16::MAX, None, false);
+            self.add_connection_target(domain, ip, None, u16::MAX, None, false);
         } else {
             // Use the information from SVCB records to add targets for the given IP address.
             let mut new_targets = Vec::new();
@@ -117,7 +128,7 @@ impl ConnectionTargetList {
                 match get_supported_protocols(svcb) {
                     Ok(protocols) => {
                         new_targets.extend(
-                            create_connection_targets(&domain, ip, svcb, false, &protocols)
+                            create_connection_targets(domain, ip, svcb, false, &protocols)
                         )
                     }
                     Err(alpn_ids) => {
@@ -164,12 +175,12 @@ impl ConnectionTargetList {
             }
         };
 
-        // Remove the connection targets created from prior A/AAAA records unless the SVCB record 
-        // has IP hints that don't contain the address of the target. 
-        // Then add new targets for the A/AAAA IPs using the additional information from the SVCB record.
+        // Update unused connection targets from prior A/AAAA records with the SVCB record information
+        // if the SVCB either contains no iphints or contains an iphint for the address of the target.
         let ips: HashSet<IpAddr> = self.targets
             .extract_if(.., |target| {
                 target.domain == domain &&
+                !target.used &&
                 match &target.address {
                     IpAddr::V4(ip) => !svcb.has_ipv4_hint() || svcb.ipv4_hint_contains_address(ip),
                     IpAddr::V6(ip) => !svcb.has_ipv6_hint() || svcb.ipv6_hint_contains_address(ip),
@@ -178,22 +189,20 @@ impl ConnectionTargetList {
             .map(|target| target.address)
             .collect();
         for ip in ips {
-            self.targets.extend(create_connection_targets(&domain, ip, &svcb, false, &supported_protocols));
+            self.targets.extend(
+                create_connection_targets(&domain, ip, &svcb, false, &supported_protocols)
+            );
         }
 
-        // Add targets for IP hints in SVCB records if the corresponding record (A/AAAA)
+        // Add new targets for IP hints in SVCB records if the corresponding record (A/AAAA)
         // has not been received yet.
-        let has_ipv4_targets = self.targets.iter()
-            .any(|target| target.domain == domain && target.address.is_ipv4());
-        if !has_ipv4_targets {
+        if !self.has_targets_of_family(&domain, &AddressFamily::IPv4) {
             if let Some(ipv4_hints) = svcb.get_ipv4_hint_value() {
                 let ips = ipv4_hints.iter().map(|hint| hint.0.into()).collect();
                 self.add_connection_targets_from_ip_hints(&domain, ips, &svcb, &supported_protocols);
             }
         }
-        let has_ipv6_targets = self.targets.iter()
-            .any(|target| target.domain == domain && target.address.is_ipv6());
-        if !has_ipv6_targets && is_ipv6_available() {
+        if !self.has_targets_of_family(&domain, &AddressFamily::IPv6) && is_ipv6_available() {
             if let Some(ipv6_hints) = svcb.get_ipv6_hint_value() {
                 let ips = ipv6_hints.iter().map(|hint| hint.0.into()).collect();
                 self.add_connection_targets_from_ip_hints(&domain, ips, &svcb, &supported_protocols);
@@ -205,6 +214,12 @@ impl ConnectionTargetList {
             .entry(domain)
             .or_insert_with(Vec::new)
             .push(svcb);
+    }
+
+    fn has_targets_of_family(&self, domain: &str, address_family: &AddressFamily) -> bool {
+        self.targets.iter().any(|target| {
+            target.domain == domain && address_family.matches(&target.address)
+        })
     }
 
     fn add_connection_targets_from_ip_hints(
