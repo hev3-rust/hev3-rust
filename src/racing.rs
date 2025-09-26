@@ -6,7 +6,7 @@ use crate::hev3_client::{Hev3Config, Hev3Error, Result};
 use std::pin::Pin;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
-use log::{debug, info, trace, warn};
+use log::{debug, info, warn};
 
 pub async fn race_connections(
     mut connection_targets: ConnectionTargetList,
