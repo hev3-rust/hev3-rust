@@ -14,8 +14,6 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
-//TODO handle ECH, see example https://github.com/rustls/rustls/blob/main/examples/src/bin/ech-client.rs
-
 /// Unified connection type that can hold either a TLS stream or a QUIC connection
 #[derive(Debug)]
 pub enum Hev3Stream {

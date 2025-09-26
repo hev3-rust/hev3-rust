@@ -15,7 +15,6 @@ The following parts of the HEv3 specification draft are currently not implemente
 - history of round-trip-times to influence target sorting
 - flexible timeouts and delays
 - TODO: destination address selection (MUST)
-- TODO: SVCB-reliant clients MUST wait for SVCB records before proceeding with the cryptographic handshake
 - TODO: handle expired DNS records: remove ConnectionTarget if used == false
 - TODO: everything in Section 8 (Supporting IPv6-Mostly and IPv6-Only Networks)
 
