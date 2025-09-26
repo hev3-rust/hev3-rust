@@ -6,6 +6,7 @@ use crate::hev3_client::{Hev3Config, Hev3Error, Result};
 use std::pin::Pin;
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
+use tokio::time::{sleep, Instant};
 use log::{debug, info, warn};
 
 pub async fn race_connections(
@@ -23,9 +24,10 @@ pub async fn race_connections(
     };
 
     connection_handles.push(start_connection_concurrently(first_target, hostname, port, &tx));
+    let mut previous_target = Some(first_target.clone());
 
-    let mut connection_timeout = Box::pin(tokio::time::sleep(config.connection_timeout));
-    let mut connection_attempt_delay = create_cad(config);
+    let mut connection_timeout = Box::pin(sleep(config.connection_timeout));
+    let mut connection_attempt_delay = Box::pin(sleep(config.connection_attempt_delay));
 
     loop {
         // Break if
@@ -53,10 +55,19 @@ pub async fn race_connections(
                 match result {
                     Ok(_) => {
                         abort_all_pending_tasks(&mut connection_handles, &mut dns_resolver);
-                        return result;
+                        return result.map_err(|e| e.0);
                     }
-                    // TODO: start next attempt immediately
-                    Err(e) => info!("Connection attempt failed: {}", e),
+                    Err(e) => {
+                        info!("Connection attempt failed: {}", e.0);
+
+                        if let Some(ref target) = previous_target &&
+                           same_domain_address_protocol(&target, &e.1) {
+                            
+                            previous_target = start_next_attempt(&mut connection_targets, hostname, 
+                                port, &tx, &mut connection_handles, &mut connection_attempt_delay, 
+                                config).cloned();
+                        }
+                    }
                 }
             }
             // New DNS result -> include into connection targets list
@@ -74,11 +85,8 @@ pub async fn race_connections(
             // tokio::select! would immediately execute this branch on every further iteration
             _ = &mut connection_attempt_delay, if connection_targets.has_remaining() => {
                 debug!("Connection attempt delay expired");
-                if let Some(next_target) = connection_targets.get_next_target() {
-                    let handle = start_connection_concurrently(next_target, hostname, port, &tx);
-                    connection_handles.push(handle);
-                    connection_attempt_delay = create_cad(config);
-                }
+                previous_target = start_next_attempt(&mut connection_targets, hostname, port, &tx, 
+                    &mut connection_handles, &mut connection_attempt_delay, config).cloned();
             }
             // Connection timeout expires -> abort
             _ = &mut connection_timeout => {
@@ -94,12 +102,37 @@ pub async fn race_connections(
     Err(Hev3Error::NoRouteAvailable)
 }
 
+fn same_domain_address_protocol(target: &ConnectionTarget, e: &ConnectionTarget) -> bool {
+    target.domain == e.domain &&
+        target.address == e.address &&
+        target.protocol == e.protocol
+}
+
+fn start_next_attempt<'a>(
+    connection_targets: &'a mut ConnectionTargetList,
+    hostname: &str,
+    port: u16,
+    tx: &Sender<std::result::Result<Hev3Stream, (Hev3Error, ConnectionTarget)>>,
+    connection_handles: &mut Vec<JoinHandle<()>>,
+    connection_attempt_delay: &mut Pin<Box<tokio::time::Sleep>>,
+    config: &Hev3Config,
+) -> Option<&'a ConnectionTarget> {
+    if let Some(next_target) = connection_targets.get_next_target() {
+        let handle = start_connection_concurrently(next_target, hostname, port, &tx);
+        connection_handles.push(handle);
+        connection_attempt_delay.as_mut().reset(Instant::now() + config.connection_attempt_delay);
+        return Some(next_target)
+    }
+    None
+}
+
 fn start_connection_concurrently(
     target: &ConnectionTarget,
     hostname: &str,
     port: u16,
-    tx: &Sender<Result<Hev3Stream>>,
+    tx: &Sender<std::result::Result<Hev3Stream, (Hev3Error, ConnectionTarget)>>,
 ) -> JoinHandle<()> {
+    let target = target.clone();
     let protocol = target.protocol;
     let address = target.address;
     let hostname = hostname.to_string();
@@ -112,14 +145,10 @@ fn start_connection_concurrently(
                 connection::connect_quic(address, port, &hostname, ech).await,
             Some(Protocol::Tcp) | None => 
                 connection::connect_tcp_tls(address, port, hostname, ech).await,
-        };
+        }.map_err(|e| (e, target));
         let _ = tx.send(stream).await;
     });
     handle
-}
-
-fn create_cad(config: &Hev3Config) -> Pin<Box<tokio::time::Sleep>> {
-    Box::pin(tokio::time::sleep(config.connection_attempt_delay))
 }
 
 fn all_handles_finished(handles: &Vec<JoinHandle<()>>) -> bool {
