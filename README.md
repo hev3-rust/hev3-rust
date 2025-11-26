@@ -2,9 +2,11 @@
 
 This is a Rust implementation of the Happy Eyeballs Version 3 algorithm, which helps reduce user-visible delays on dual-stack hosts by racing connections to resolved addresses while preferring IPv6.
 
-This project is an implementation of the current draft of Happy Eyeballs Version 3, as outlined in [draft-ietf-happy-happyeyeballs-v3-01](https://datatracker.ietf.org/doc/draft-ietf-happy-happyeyeballs-v3/01/). The implementation is primarily focused on handling HTTP/HTTPS traffic, but should work for other application-layer protocols as well as it returns raw TCP+TLS or QUIC streams.
+This project is an implementation of the current draft of Happy Eyeballs Version 3, as outlined in [draft-ietf-happy-happyeyeballs-v3-02](https://datatracker.ietf.org/doc/draft-ietf-happy-happyeyeballs-v3/02/). The implementation is primarily focused on handling HTTP/HTTPS traffic, but should work for other application-layer protocols as well as it returns raw TCP+TLS or QUIC streams.
 
 Like the HEv3 specification draft, this implementation assumes a preference for IPv6 and QUIC during connection racing. This preference is currently not configurable. 
+
+If you use this code for a scientific publication, please cite this repository according to [CITATION.cff](CITATION.cff).
 
 ## Status
 
@@ -14,9 +16,10 @@ The following parts of the HEv3 specification draft are currently not implemente
 - handling of multiple dns servers (IPv4/IPv6).
 - history of round-trip-times to influence target sorting
 - flexible timeouts and delays
-- TODO: destination address selection (MUST)
-- TODO: handle expired DNS records: remove ConnectionTarget if used == false
-- TODO: everything in Section 8 (Supporting IPv6-Mostly and IPv6-Only Networks)
+- proper Destination Address Selection
+- pending TLS and QUIC handshakes until SVCB queries arrive when DoE is used
+- handling A/AAAA DNS records that expired before the corresponding IP addres has been attempted
+- support for IPv6-mostly and IPv6-only networks
 
 ## Usage
 
@@ -24,8 +27,7 @@ Include the `hev3-rust` crate in your Cargo.toml:
 
 ```toml
 [dependencies]
-hev3-rust = { path = "../hev3-repo" }
-# TODO update when on github or released on crates.io
+hev3-rust = { git = "https://github.com/hev3-rust/hev3-rust.git" }
 ```
 
 To use the default configuration copy the following into your main.rs:

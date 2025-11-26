@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+title: hev3-rust
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Klein
+    family-names: Kevin
+    email: kvkl@protonmail.com
+    orcid: 'https://orcid.org/0000-0002-7286-0961'
+    affiliation: Hasso Plattner Institut (HPI)
+repository-code: 'https://github.com/hev3-rust/hev3-rust'
+license: MIT
