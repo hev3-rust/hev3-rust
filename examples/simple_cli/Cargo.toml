@@ -6,7 +6,7 @@ authors = ["Your Name <your.email@example.com>"]
 description = "A simple cli example of the Happy Eyeballs Version 3 library"
 
 [dependencies]
-hev3-rust = { path = "../.." } # TODO update when on github or released on crates.io
+hev3-rust = { git = "https://github.com/hev3-rust/hev3-rust.git" }
 tokio = { version = "1.36", features = ["full"] }
 log = "0.4.28"
 env_logger = "0.11.8"
